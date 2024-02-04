@@ -41,3 +41,57 @@ changed a good bit for integrating a display driver. What can I say?
 I'm lazy.
 
 
+# Building
+
+First, [install the excellent ESP-IDF from
+Espressif](https://docs.espressif.com/projects/esp-idf/en/v5.1.2/esp32s3/get-started/index.html). I
+used that version for that SoC chip because that is what matched the
+board's SoC and it is the most recent stable release as of this
+writing.
+
+Connect the board to a USB port on your computer that can source
+several amps. I used a USB3 (blue) USB port on my rather hefty desktop
+machine and it worked fine. The display should boot up and run its
+factory sample software when you do this. For me, on my Linux box,
+this device showed up as `/dev/ttyUSB0` because I make it a rule to
+remove other serial devices when I'm just fooling around with a new
+toy, so I didn't have any other devices to contend with.
+
+You have to do something manual to get into the "download mode" of the
+board. Just press and hold the RESET button, press and hold the BOOT
+button, release the RESET button, release the BOOT button. This
+becomes second nature after doing it a few thousand times. This puts
+the board into "download mode" which allows the ESP-IDF software to
+flash a new build.
+
+If you want to reset the board and run what is in its flash, just
+click the RESET button.
+
+You can run the ESP-IDF `monitor` to see the terminal output of the
+board when it boots. For the factory demo software I remember this as
+being pretty boring, but it will show you if you're connected properly.
+
+When you have cloned this git repository, you can just go to its top
+level directory and do
+
+	. ../esp-idf/export.sh
+	idf.py -p /dev/ttyUSB0 build flash monitor
+
+When the build is complete, ESP-IDF will start to flash the new image,
+which takes a few seconds. While that is going on, the `monitor` mode
+is running, so you can see its progress. If the board wasn't in
+"download mode" when you ran this command you can just do the
+RESET-BOOT sequence described above to get it into that mode and run
+the command again. The second time, since no changes were made, the
+`build flash monitor` doesn't have to rebuild anything and it will
+flash the image immediately.
+
+When the flashing process is done the `monitor` will show a message
+like `Hard resetting via RTS pin...` but this board isn't designed to
+reset when the USB serial interface's RTS pin is wiggled, so you have
+to press the RESET button manually. This will start your new flashed
+image.
+
+To exit the `monitor` mode you can just hit control-`]`. The board
+will continue to run its software even if you're not watching it, like
+a good little computer.
