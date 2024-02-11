@@ -95,3 +95,18 @@ image.
 To exit the `monitor` mode you can just hit control-`]`. The board
 will continue to run its software even if you're not watching it, like
 a good little computer.
+
+
+# TO DO
+
+* Set backlight using PWM instead of always full ON.
+
+* Vary backlight based on room occupancy and light intensity and via
+  Home Assistant MQTT messaging or similar.
+
+* Build the clock UI to replace the toy scatterchart UI.
+
+* Optimize display updating to avoid full copy of the framebuffer each
+  time? Scatterchart gets ~16FPS with double buffering. While this is
+  surely enough for a wall clock, it somehow seems inelegant to leave
+  this poor little machine working so hard to accomplish so little.

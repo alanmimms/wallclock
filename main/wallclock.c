@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
+#include "esp_spiffs.h"
 #include "lvgl.h"
 
 
@@ -24,12 +25,11 @@ static const char *TAG = "wallclock";
 
 
 static lv_disp_t *disp;
+static lv_font_t *loraFont;
 
 
-extern void example_lvgl_demo_ui(lv_disp_t *disp);
-
-
-// we use two semaphores to sync the VSYNC event and the LVGL task, to avoid potential tearing effect
+// Use two semaphores to sync the VSYNC event and the LVGL task, to
+// avoid potential tearing effect.
 SemaphoreHandle_t semVsyncEnd;
 SemaphoreHandle_t semGuiReady;
 
@@ -40,7 +40,10 @@ static void lvglTickCB(void *arg) {
 }
 
 
-static bool vsyncCB(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *event_data, void *user_data) {
+static bool vsyncCB(esp_lcd_panel_handle_t panel,
+		    const esp_lcd_rgb_panel_event_data_t *event_data,
+		    void *user_data)
+{
   BaseType_t high_task_awoken = pdFALSE;
 
   if (xSemaphoreTakeFromISR(semGuiReady, &high_task_awoken) == pdTRUE) {
@@ -64,6 +67,55 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
   // pass the draw buffer to the driver
   esp_lcd_panel_draw_bitmap(panelH, ox1, oy1, ox2 + 1, oy2 + 1, colorMap);
   lv_disp_flush_ready(drv);
+}
+
+
+static void setupClockUI(void) {
+  lv_obj_t *scr = lv_disp_get_scr_act(disp);
+  lv_obj_t *timeW = lv_label_create(scr);
+  lv_obj_set_size(timeW, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_text_font(timeW, loraFont, 0);
+  lv_label_set_text(timeW, "00:00");
+  lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(timeW, LV_ALIGN_CENTER, 0, 0);
+}
+
+
+static void readFonts(void) {
+
+  static const esp_vfs_spiffs_conf_t conf = {
+    .base_path = "/spiffs",
+    .partition_label = NULL,
+    .max_files = 5,
+    .format_if_mount_failed = false
+  };
+
+  // Use settings defined above to initialize and mount SPIFFS filesystem.
+  // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
+  esp_err_t ret = esp_vfs_spiffs_register(&conf);
+
+  if (ret != ESP_OK) {
+    if (ret == ESP_FAIL) {
+      ESP_LOGE(TAG, "Failed to mount or format filesystem");
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+      ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+    } else {
+      ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+    }
+    return;
+  }
+
+  size_t total = 0, used = 0;
+  ret = esp_spiffs_info(NULL, &total, &used);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+  } else {
+    ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+  }
+
+  static const char loraPath[] = "A:/spiffs/Lora-Bold.ttf";
+  loraFont = lv_tiny_ttf_create_file(loraPath, 150);
+  ESP_LOGI(TAG, "Lora font at %p", loraFont);
 }
 
 
@@ -156,6 +208,9 @@ static void initLCD(void) {
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panelH, 2, &buf1, &buf2));
   lv_disp_draw_buf_init(&dispBuf, buf1, buf2, HRESOLUTION * VRESOLUTION);
 
+  ESP_LOGI(TAG, "[read fonts]");
+  readFonts();
+
   ESP_LOGI(TAG, "[create LVGL display]");
   lv_disp_drv_init(&dispDrv);
   dispDrv.hor_res = HRESOLUTION;
@@ -163,11 +218,14 @@ static void initLCD(void) {
   dispDrv.flush_cb = flushCB;
   dispDrv.draw_buf = &dispBuf;
   dispDrv.user_data = panelH;
-  dispDrv.full_refresh = true; // the full_refresh mode can maintain the synchronization between the two frame buffers
+
+  // The full_refresh mode can maintain the synchronization between
+  // the two frame buffers.
+  dispDrv.full_refresh = true;
+
   disp = lv_disp_drv_register(&dispDrv);
 
   ESP_LOGI(TAG, "[install LVGL tick timer]");
-  // Tick interface for LVGL (using esp_timer to generate 2ms periodic event)
   static const esp_timer_create_args_t timerArgs = {
     .callback = &lvglTickCB,
     .name = "lvglTickCB",
@@ -207,8 +265,8 @@ void app_main(void) {
 
   printf("Minimum free heap size: %" PRIu32 " bytes\n", esp_get_minimum_free_heap_size());
 
-  ESP_LOGI(TAG, "[display LVGL scatter chart]");
-  example_lvgl_demo_ui(disp);
+  ESP_LOGI(TAG, "[set up clock UI]");
+  setupClockUI();
 
   while (1) {
     // raise the task priority of LVGL and/or reduce the handler period can improve the performance
