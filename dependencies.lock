@@ -4,12 +4,12 @@ dependencies:
     source:
       type: idf
     version: 5.1.2
-  lvgl/lvgl:
-    component_hash: 948bff879a345149b83065535bbc4a026ce9f47498a22881e432a264b9098015
+  lvgl__lvgl:
+    component_hash: null
     source:
-      service_url: https://api.components.espressif.com/
-      type: service
+      path: /home/alan/ha/wallclock/components/lvgl__lvgl
+      type: local
     version: 8.3.11
-manifest_hash: a81eb21fbc3b7402cae741bbada7fc5969b194678f6064560da615bcbe6ec75c
+manifest_hash: 5571674267950c54a6b956f0eb7332214a6ae3d037ffec6344fcd1a58bdbeb75
 target: esp32s3
 version: 1.0.0

@@ -11,7 +11,6 @@
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
-#include "esp_spiffs.h"
 #include "lvgl.h"
 
 
@@ -25,7 +24,7 @@ static const char *TAG = "wallclock";
 
 
 static lv_disp_t *disp;
-static lv_font_t *loraFont;
+extern lv_font_t LoraBold;
 
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
@@ -73,49 +72,10 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 static void setupClockUI(void) {
   lv_obj_t *scr = lv_disp_get_scr_act(disp);
   lv_obj_t *timeW = lv_label_create(scr);
-  lv_obj_set_size(timeW, lv_pct(100), lv_pct(100));
-  lv_obj_set_style_text_font(timeW, loraFont, 0);
-  lv_label_set_text(timeW, "00:00");
+  lv_label_set_text_static(timeW, "00:00");
+  lv_obj_set_style_text_font(timeW, &LoraBold, 0);
   lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(timeW, LV_ALIGN_CENTER, 0, 0);
-}
-
-
-static void readFonts(void) {
-
-  static const esp_vfs_spiffs_conf_t conf = {
-    .base_path = "/spiffs",
-    .partition_label = NULL,
-    .max_files = 5,
-    .format_if_mount_failed = false
-  };
-
-  // Use settings defined above to initialize and mount SPIFFS filesystem.
-  // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
-  esp_err_t ret = esp_vfs_spiffs_register(&conf);
-
-  if (ret != ESP_OK) {
-    if (ret == ESP_FAIL) {
-      ESP_LOGE(TAG, "Failed to mount or format filesystem");
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-      ESP_LOGE(TAG, "Failed to find SPIFFS partition");
-    } else {
-      ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
-    }
-    return;
-  }
-
-  size_t total = 0, used = 0;
-  ret = esp_spiffs_info(NULL, &total, &used);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
-  } else {
-    ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
-  }
-
-  static const char loraPath[] = "A:/spiffs/Lora-Bold.ttf";
-  loraFont = lv_tiny_ttf_create_file(loraPath, 150);
-  ESP_LOGI(TAG, "Lora font at %p", loraFont);
 }
 
 
@@ -207,9 +167,6 @@ static void initLCD(void) {
   ESP_LOGI(TAG, "[use frame buffers as LVGL draw buffers]");
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panelH, 2, &buf1, &buf2));
   lv_disp_draw_buf_init(&dispBuf, buf1, buf2, HRESOLUTION * VRESOLUTION);
-
-  ESP_LOGI(TAG, "[read fonts]");
-  readFonts();
 
   ESP_LOGI(TAG, "[create LVGL display]");
   lv_disp_drv_init(&dispDrv);
