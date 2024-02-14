@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
+#include <driver/ledc.h>
 #include "lvgl.h"
 
 
@@ -25,6 +26,10 @@ static const char *TAG = "wallclock";
 
 static lv_disp_t *disp;
 extern lv_font_t LoraBold;
+static lv_obj_t *timeW;
+static int hours = 0;
+static int minutes = 0;
+static int seconds = 0;
 
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
@@ -33,9 +38,26 @@ SemaphoreHandle_t semVsyncEnd;
 SemaphoreHandle_t semGuiReady;
 
 
-static void lvglTickCB(void *arg) {
+static void lvglTickCB(void *) {
   /* Tell LVGL how many milliseconds has elapsed */
   lv_tick_inc(LVGL_TICK_PERIOD_MS);
+}
+
+
+// Timer callback for updating the seconds.
+static void secondsCB(lv_timer_t *timerP) {
+
+  if (++seconds > 59) {
+    seconds = 0;
+
+    if (++minutes > 59) {
+      minutes = 0;
+
+      if (++hours > 23) hours = 0;
+    }
+  }
+
+  lv_label_set_text_fmt(timeW, "%02d:%02d", hours, minutes);
 }
 
 
@@ -70,12 +92,19 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 
 
 static void setupClockUI(void) {
-  lv_obj_t *scr = lv_disp_get_scr_act(disp);
-  lv_obj_t *timeW = lv_label_create(scr);
+  lv_obj_t *screenW = lv_disp_get_scr_act(disp);
+
+  timeW = lv_label_create(screenW);
   lv_label_set_text_static(timeW, "00:00");
-  lv_obj_set_style_text_font(timeW, &LoraBold, 0);
-  lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(timeW, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_text_font(timeW, &LoraBold, LV_PART_MAIN);
+  lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_update_layout(timeW);
+
+  int w = lv_obj_get_width(timeW);
+  int h = lv_obj_get_height(timeW);
+  lv_obj_set_pos(timeW, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
+
+  lv_timer_create(secondsCB, 1000, NULL);
 }
 
 
@@ -148,17 +177,31 @@ static void initLCD(void) {
     .on_vsync = vsyncCB,
   };
 
-  lv_disp_drv_t dispDriver;      // contains callback functions
+  static lv_disp_drv_t dispDriver;      // contains callback functions
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panelH, &cbs, &dispDriver));
 
-  ESP_LOGI(TAG, "[turn on LCD backlight]");
-  gpio_config_t bk_gpio_config = {
-    .mode = GPIO_MODE_OUTPUT,
-    .pin_bit_mask = 1ULL << 2,
+  ESP_LOGI(TAG, "[configure LCD backlight PWM]");
+  static const ledc_timer_config_t backlightTimer = {
+    .speed_mode = LEDC_LOW_SPEED_MODE,
+    .timer_num = LEDC_TIMER_0,
+    .duty_resolution = LEDC_TIMER_13_BIT,
+    .freq_hz = 5000,
+    .clk_cfg = LEDC_AUTO_CLK,
   };
-  ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
-  gpio_set_level(GPIO_NUM_2, 1);
+  
+  ESP_ERROR_CHECK(ledc_timer_config(&backlightTimer));
 
+  // LEDC PWM channel configuration
+  static const ledc_channel_config_t backlightChannel = {
+    .speed_mode     = LEDC_LOW_SPEED_MODE,
+    .channel        = LEDC_CHANNEL_0,
+    .timer_sel      = LEDC_TIMER_0,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .gpio_num       = GPIO_NUM_2,
+    .duty           = 10 * 8192 / 100, /* duty cycle in % as < full count 8192 */
+    .hpoint         = 0,
+  };
+  ESP_ERROR_CHECK(ledc_channel_config(&backlightChannel));
 
   ESP_LOGI(TAG, "[initialize LVGL library]");
   lv_init();
