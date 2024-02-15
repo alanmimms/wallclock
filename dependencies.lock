@@ -1,4 +1,16 @@
 dependencies:
+  espressif/esp_lcd_touch:
+    component_hash: d4d8f2dc33205797169a97a02e0d89a8982f59fe0509129b54422052b8522f59
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.1.1
+  espressif/esp_lcd_touch_gt911:
+    component_hash: 20ac25d1439dbe177764dbed9cd868388fecb052380b5349f2e9e370013ca76a
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.1.0
   idf:
     component_hash: null
     source:
@@ -10,6 +22,6 @@ dependencies:
       path: /home/alan/ha/wallclock/components/lvgl__lvgl
       type: local
     version: 8.3.11
-manifest_hash: 5571674267950c54a6b956f0eb7332214a6ae3d037ffec6344fcd1a58bdbeb75
+manifest_hash: 4b38e77889d2be935e14b2d2234672f7d1065abe237a640a94dc23292174db1a
 target: esp32s3
 version: 1.0.0

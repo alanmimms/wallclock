@@ -3,30 +3,57 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "esp_timer.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_rgb.h"
+
 #include "driver/gpio.h"
+#include "driver/i2c.h"
+#include "driver/ledc.h"
+
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
-#include <driver/ledc.h>
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_timer.h"
+
+#include "esp_lcd_touch.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_touch_gt911.h"
+
 #include "lvgl.h"
+
+#include "lwip/err.h"
+#include "lwip/sys.h"
 
 
 static const char *TAG = "wallclock";
+
+// THIS COULD BE HELPFUL:
+// https://components.espressif.com/components/espressif/esp_lvgl_port
+
+
+#if 0
+static const char wifiSSID[] = WIFI_SSID;
+static const char wifiPass[] = WIFI_PASS;
+#endif
 
 
 #define HRESOLUTION 800
 #define VRESOLUTION 480
 
-#define LVGL_TICK_PERIOD_MS 2
-
+#define LVGL_TICK_PERIOD_MS 10
 
 static lv_disp_t *disp;
 extern lv_font_t LoraBold;
 static lv_obj_t *timeW;
+
+static lv_disp_draw_buf_t dispBuf;
+static lv_disp_drv_t dispDrv;
+static esp_lcd_panel_handle_t panelH;
+static esp_lcd_touch_handle_t touchH;
+
 static int hours = 0;
 static int minutes = 0;
 static int seconds = 0;
@@ -76,7 +103,6 @@ static bool vsyncCB(esp_lcd_panel_handle_t panel,
 
 
 static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *colorMap) {
-  esp_lcd_panel_handle_t panelH = (esp_lcd_panel_handle_t) drv->user_data;
   int ox1 = area->x1;
   int ox2 = area->x2;
   int oy1 = area->y1;
@@ -94,6 +120,7 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 static void setupClockUI(void) {
   lv_obj_t *screenW = lv_disp_get_scr_act(disp);
 
+  ESP_LOGI(TAG, "[set up clock UI]");
   timeW = lv_label_create(screenW);
   lv_label_set_text_static(timeW, "00:00");
   lv_obj_set_style_text_font(timeW, &LoraBold, LV_PART_MAIN);
@@ -108,10 +135,33 @@ static void setupClockUI(void) {
 }
 
 
-static void initLCD(void) {
-  esp_lcd_panel_handle_t panelH = NULL;
-  static lv_disp_draw_buf_t dispBuf;
-  static lv_disp_drv_t dispDrv;
+static void setupBacklightPWM(void) {
+  ESP_LOGI(TAG, "[configure LCD backlight PWM]");
+  static const ledc_timer_config_t backlightTimer = {
+    .speed_mode = LEDC_LOW_SPEED_MODE,
+    .timer_num = LEDC_TIMER_0,
+    .duty_resolution = LEDC_TIMER_13_BIT,
+    .freq_hz = 5000,
+    .clk_cfg = LEDC_AUTO_CLK,
+  };
+  
+  ESP_ERROR_CHECK(ledc_timer_config(&backlightTimer));
+
+  // LEDC PWM channel configuration
+  static const ledc_channel_config_t backlightChannel = {
+    .speed_mode     = LEDC_LOW_SPEED_MODE,
+    .channel        = LEDC_CHANNEL_0,
+    .timer_sel      = LEDC_TIMER_0,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .gpio_num       = GPIO_NUM_2,
+    .duty           = 10 * 8192 / 100, /* duty cycle in % as < full count 8192 */
+    .hpoint         = 0,
+  };
+  ESP_ERROR_CHECK(ledc_channel_config(&backlightChannel));
+}
+
+
+static void setupLCD(void) {
 
   static const esp_lcd_rgb_panel_config_t panelConfig = {
     .data_width = 16, // RGB565 in parallel mode, thus 16bit in width
@@ -161,18 +211,16 @@ static void initLCD(void) {
     },
   };
 
-  ESP_LOGI(TAG, "[create semaphores]");
+  ESP_LOGI(TAG, "[initialize LCD]");
   semVsyncEnd = xSemaphoreCreateBinary();
   assert(semVsyncEnd);
   semGuiReady = xSemaphoreCreateBinary();
   assert(semGuiReady);
 
-  ESP_LOGI(TAG, "[configure and initialize LCD panel]");
   ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panelConfig, &panelH));
   ESP_ERROR_CHECK(esp_lcd_panel_reset(panelH));
   ESP_ERROR_CHECK(esp_lcd_panel_init(panelH));
 
-  ESP_LOGI(TAG, "[register event callbacks]");
   esp_lcd_rgb_panel_event_callbacks_t cbs = {
     .on_vsync = vsyncCB,
   };
@@ -180,38 +228,12 @@ static void initLCD(void) {
   static lv_disp_drv_t dispDriver;      // contains callback functions
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panelH, &cbs, &dispDriver));
 
-  ESP_LOGI(TAG, "[configure LCD backlight PWM]");
-  static const ledc_timer_config_t backlightTimer = {
-    .speed_mode = LEDC_LOW_SPEED_MODE,
-    .timer_num = LEDC_TIMER_0,
-    .duty_resolution = LEDC_TIMER_13_BIT,
-    .freq_hz = 5000,
-    .clk_cfg = LEDC_AUTO_CLK,
-  };
-  
-  ESP_ERROR_CHECK(ledc_timer_config(&backlightTimer));
-
-  // LEDC PWM channel configuration
-  static const ledc_channel_config_t backlightChannel = {
-    .speed_mode     = LEDC_LOW_SPEED_MODE,
-    .channel        = LEDC_CHANNEL_0,
-    .timer_sel      = LEDC_TIMER_0,
-    .intr_type      = LEDC_INTR_DISABLE,
-    .gpio_num       = GPIO_NUM_2,
-    .duty           = 10 * 8192 / 100, /* duty cycle in % as < full count 8192 */
-    .hpoint         = 0,
-  };
-  ESP_ERROR_CHECK(ledc_channel_config(&backlightChannel));
-
-  ESP_LOGI(TAG, "[initialize LVGL library]");
   lv_init();
   void *buf1 = NULL;
   void *buf2 = NULL;
-  ESP_LOGI(TAG, "[use frame buffers as LVGL draw buffers]");
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panelH, 2, &buf1, &buf2));
   lv_disp_draw_buf_init(&dispBuf, buf1, buf2, HRESOLUTION * VRESOLUTION);
 
-  ESP_LOGI(TAG, "[create LVGL display]");
   lv_disp_drv_init(&dispDrv);
   dispDrv.hor_res = HRESOLUTION;
   dispDrv.ver_res = VRESOLUTION;
@@ -225,7 +247,6 @@ static void initLCD(void) {
 
   disp = lv_disp_drv_register(&dispDrv);
 
-  ESP_LOGI(TAG, "[install LVGL tick timer]");
   static const esp_timer_create_args_t timerArgs = {
     .callback = &lvglTickCB,
     .name = "lvglTickCB",
@@ -236,36 +257,86 @@ static void initLCD(void) {
 }
 
 
-void app_main(void) {
-  ESP_LOGI(TAG, "[initialize LCD]");
-  initLCD();
+static void setupTouch(void) {
+  ESP_LOGI(TAG, "[configure LCD touch]");
+  esp_lcd_panel_io_handle_t touchIOH;
+  static const esp_lcd_panel_io_i2c_config_t touchI2CConfig = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
+  static const esp_lcd_touch_config_t tp_cfg = {
+    .x_max = HRESOLUTION,
+    .y_max = VRESOLUTION,
+    .rst_gpio_num = -1,
+    .int_gpio_num = -1,
+    .levels = {
+      .reset = 0,
+      .interrupt = 0,
+    },
+    .flags = {
+      .swap_xy = 0,
+      .mirror_x = 0,
+      .mirror_y = 0,
+    },
+  };
+
+  // Might also be at I2C address 0xBA or 0x28.
+  ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t) I2C_NUM_1, &touchI2CConfig, &touchIOH));
+  ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(touchIOH, &tp_cfg, &touchH));
+
+  static const lvgl_port_touch_cfg_t lvglTouchConfig = {
+    .disp = disp,
+    .handle = touchH,
+  };
+
+  touchIndevP = lvgl_port_add_touch(&lvglTouchConfig);
+}
+
+
+static void printChipInfo(void) {
   /* Print chip information */
   esp_chip_info_t chip_info;
   uint32_t flash_size;
-  esp_chip_info(&chip_info);
-  printf("This is %s chip with %d CPU core(s), %s%s%s%s, ",
-	 CONFIG_IDF_TARGET,
-	 chip_info.cores,
-	 (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi/" : "",
-	 (chip_info.features & CHIP_FEATURE_BT) ? "BT" : "",
-	 (chip_info.features & CHIP_FEATURE_BLE) ? "BLE" : "",
-	 (chip_info.features & CHIP_FEATURE_IEEE802154) ? ", 802.15.4 (Zigbee/Thread)" : "");
 
+  esp_chip_info(&chip_info);
   unsigned major_rev = chip_info.revision / 100;
   unsigned minor_rev = chip_info.revision % 100;
-  printf("silicon revision v%d.%d, ", major_rev, minor_rev);
-  if(esp_flash_get_size(NULL, &flash_size) != ESP_OK) {
-    printf("Get flash size failed");
-    return;
-  }
 
-  printf("%" PRIu32 "MB %s flash\n", flash_size / (uint32_t)(1024 * 1024),
-	 (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+  ESP_ERROR_CHECK(esp_flash_get_size(NULL, &flash_size));
 
-  printf("Minimum free heap size: %" PRIu32 " bytes\n", esp_get_minimum_free_heap_size());
+  ESP_LOGI(TAG, "[%s chip with %d CPU core(s), %s%s%s%s, silicon rev v%d.%d, %"PRIu32 "MB %s flash]",
+	   CONFIG_IDF_TARGET,
+	   chip_info.cores,
+	   (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi/" : "",
+	   (chip_info.features & CHIP_FEATURE_BT) ? "BT" : "",
+	   (chip_info.features & CHIP_FEATURE_BLE) ? "BLE" : "",
+	   (chip_info.features & CHIP_FEATURE_IEEE802154) ? ", 802.15.4 (Zigbee/Thread)" : "",
+	   major_rev, minor_rev,
+	   flash_size / (uint32_t)(1024 * 1024),
+	   (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+  ESP_LOGI(TAG, "[Minimum free heap size: %" PRIu32 " bytes]", esp_get_minimum_free_heap_size());
+}
 
-  ESP_LOGI(TAG, "[set up clock UI]");
+
+static void setupI2C(void) {
+  static const i2c_config_t i2c_conf = {
+    .mode = I2C_MODE_MASTER,
+    .sda_io_num = GPIO_NUM_19,
+    .sda_pullup_en = GPIO_PULLUP_DISABLE,
+    .scl_io_num = GPIO_NUM_20,
+    .scl_pullup_en = GPIO_PULLUP_DISABLE,
+    .master.clk_speed = 400 * 1000,
+  };
+
+  ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_1, &i2c_conf));
+  ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_1, i2c_conf.mode, 0, 0, 0));
+}
+
+
+void app_main(void) {
+  printChipInfo();
+  setupI2C();
+  setupLCD();
+  setupBacklightPWM();
+  setupTouch();
   setupClockUI();
 
   while (1) {
