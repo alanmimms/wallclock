@@ -1,4 +1,5 @@
 #include <stdio.h>
+
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,7 +17,10 @@
 #include "esp_event.h"
 #include "esp_timer.h"
 
+#include "nvs_flash.h"
+
 #include "esp_lcd_touch.h"
+#include "esp_lvgl_port.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
@@ -32,12 +36,7 @@ static const char *TAG = "wallclock";
 
 // THIS COULD BE HELPFUL:
 // https://components.espressif.com/components/espressif/esp_lvgl_port
-
-
-#if 0
-static const char wifiSSID[] = WIFI_SSID;
-static const char wifiPass[] = WIFI_PASS;
-#endif
+// https://github.com/pjaos/mgos_esp32_littlevgl_wifi_setup/tree/master
 
 
 #define HRESOLUTION 800
@@ -45,18 +44,48 @@ static const char wifiPass[] = WIFI_PASS;
 
 #define LVGL_TICK_PERIOD_MS 10
 
-static lv_disp_t *disp;
-extern lv_font_t LoraBold;
-static lv_obj_t *timeW;
-
 static lv_disp_draw_buf_t dispBuf;
 static lv_disp_drv_t dispDrv;
 static esp_lcd_panel_handle_t panelH;
 static esp_lcd_touch_handle_t touchH;
+static lv_indev_t *touchIndevP;
 
 static int hours = 0;
 static int minutes = 0;
 static int seconds = 0;
+
+
+// Styles and UI widgets.
+static lv_style_t borderStyle;
+static lv_style_t popupBoxStyle;
+
+static lv_disp_t *disp;
+extern lv_font_t LoraBold;
+
+static lv_obj_t *timeW;
+
+static lv_obj_t *settings;
+static lv_obj_t *settingsBtn;
+static lv_obj_t *settingsCloseBtn;
+static lv_obj_t *settingsWiFiSwitch;
+static lv_obj_t *wfList;
+static lv_obj_t *settingsLabel;
+static lv_obj_t *mboxConnect;
+static lv_obj_t *mboxTitle;
+static lv_obj_t *mboxPassword;
+static lv_obj_t *mboxConnectBtn;
+static lv_obj_t *mboxCloseBtn;
+static lv_obj_t *keyboard;
+static lv_obj_t *popupBox;
+static lv_obj_t *popupBoxCloseBtn;
+
+
+static int foundNetworks = 0;
+unsigned long networkTimeout = 10 * 1000;
+String ssidName, ssidPW;
+
+TaskHandle_t ntScanTaskHandler, ntConnectTaskHandler;
+std::vector<String> foundWifiList;
 
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
@@ -72,6 +101,15 @@ static void lvglTickCB(void *) {
 
 
 // Timer callback for updating the seconds.
+//
+// XXX Does this get called with lvgl_port_lock already held or do I
+// need to protect here or will that hang or what?
+//
+// https://components.espressif.com/components/espressif/esp_lvgl_port
+//
+// lvgl_port_lock(0);
+// ...
+// lvgl_port_unlock();
 static void secondsCB(lv_timer_t *timerP) {
 
   if (++seconds > 59) {
@@ -262,11 +300,11 @@ static void setupTouch(void) {
   esp_lcd_panel_io_handle_t touchIOH;
   static const esp_lcd_panel_io_i2c_config_t touchI2CConfig = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
 
-  static const esp_lcd_touch_config_t tp_cfg = {
+  static const esp_lcd_touch_config_t touchESPConfig = {
     .x_max = HRESOLUTION,
     .y_max = VRESOLUTION,
     .rst_gpio_num = -1,
-    .int_gpio_num = -1,
+    .int_gpio_num = GPIO_NUM_38,
     .levels = {
       .reset = 0,
       .interrupt = 0,
@@ -278,16 +316,17 @@ static void setupTouch(void) {
     },
   };
 
-  // Might also be at I2C address 0xBA or 0x28.
-  ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t) I2C_NUM_1, &touchI2CConfig, &touchIOH));
-  ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(touchIOH, &tp_cfg, &touchH));
+  // XXX need to setup GPIOs?
 
-  static const lvgl_port_touch_cfg_t lvglTouchConfig = {
+  ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t) I2C_NUM_1, &touchI2CConfig, &touchIOH));
+  ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(touchIOH, &touchESPConfig, &touchH));
+
+  const lvgl_port_touch_cfg_t touchLVGLConfig = {
     .disp = disp,
     .handle = touchH,
   };
 
-  touchIndevP = lvgl_port_add_touch(&lvglTouchConfig);
+  touchIndevP = lvgl_port_add_touch(&touchLVGLConfig);
 }
 
 
@@ -320,9 +359,9 @@ static void setupI2C(void) {
   static const i2c_config_t i2c_conf = {
     .mode = I2C_MODE_MASTER,
     .sda_io_num = GPIO_NUM_19,
-    .sda_pullup_en = GPIO_PULLUP_DISABLE,
+    .sda_pullup_en = GPIO_PULLUP_ENABLE,
     .scl_io_num = GPIO_NUM_20,
-    .scl_pullup_en = GPIO_PULLUP_DISABLE,
+    .scl_pullup_en = GPIO_PULLUP_ENABLE,
     .master.clk_speed = 400 * 1000,
   };
 
@@ -331,12 +370,129 @@ static void setupI2C(void) {
 }
 
 
+// Set up the network. If network isn't configured or connection to
+// WiFi or NTP server pool fails, bring up a GUI to configure the WiFi
+// and NTP server pool. Once WiFi connects properly, it's a short time
+// after that we get NTP result, updating the time display.
+static void setupNetwork(void) {
+}
+
+
+static void setupStyles(void) {
+  lv_style_init(&border_style);
+  lv_style_set_border_width(&border_style, 2);
+  lv_style_set_border_color(&border_style, lv_color_black());
+
+  lv_style_init(&popupBox_style);
+  lv_style_set_radius(&popupBox_style, 10);
+  lv_style_set_bg_opa(&popupBox_style, LV_OPA_COVER);
+  lv_style_set_border_color(&popupBox_style, lv_palette_main(LV_PALETTE_BLUE));
+  lv_style_set_border_width(&popupBox_style, 5);
+}
+
+
+static void setupKeyboard(void) {
+  keyboard = lv_keyboard_create(lv_scr_act());
+  lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+
+static void setupSettings(void) {
+  settings = lv_obj_create(lv_scr_act());
+  lv_obj_add_style(settings, &borderStyle, 0);
+  lv_obj_set_size(settings, tft.width() - 100, tft.height() - 40);
+  lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
+
+  settingsLabel = lv_label_create(settings);
+  lv_label_set_text(settingsLabel, "Settings " LV_SYMBOL_SETTINGS);
+  lv_obj_align(settingsLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  settingsCloseBtn = lv_btn_create(settings);
+  lv_obj_set_size(settingsCloseBtn, 30, 30);
+  lv_obj_align(settingsCloseBtn, LV_ALIGN_TOP_RIGHT, 0, -10);
+  lv_obj_add_event_cb(settingsCloseBtn, btn_event_cb, LV_EVENT_ALL, NULL);
+  lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
+  lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
+  lv_obj_center(btnSymbol);
+
+  settingsWiFiSwitch = lv_switch_create(settings);
+  lv_obj_add_event_cb(settingsWiFiSwitch, btn_event_cb, LV_EVENT_ALL, NULL);
+  lv_obj_align_to(settingsWiFiSwitch, settingsLabel, LV_ALIGN_TOP_RIGHT, 60, -10);
+  lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
+
+  wfList = lv_list_create(settings);
+  lv_obj_set_size(wfList, tft.width() - 140, 210);
+  lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
+}
+
+
+typedef struct sWiFiEntry {
+  unsigned short key;
+} tWiFiEntry;
+
+
+// Read our NVS variables
+static void setupNVS(void) {
+    // Initialize NVS subsystem to use default partition.
+    ESP_ERROR_CHECK(nvs_flash_init());
+
+    // Open our NVS namespace.
+    nvs_handle_t wifiNVSH;
+    ESP_ERROR_CHECK(nvs_open("WiFi", NVS_READONLY, &h));
+
+    nvs_stats_t stats;
+    ESP_ERROR_CHECK(nvs_get_stats(NULL, &stats));
+    ESP_LOGI(TAG, "NVS: used=%d  free=%d  total=%d  nscount=%d",
+             stats.used_entries, stats.free_entries, stats.total_entries, stats.namespace_count);
+
+    // In the `WiFi` namespace, read the list of WiFi APs and
+    // credentials and NTP pool names.  Each entry is with key as a
+    // four digit decimal number like `0001` whose value consists of a
+    // single string with fields separated by 0xFF bytes and
+    // containing the AP name, the password, and the optional NTP pool
+    // semicolon separated list.  These are tried in order from the
+    // lowest numbered to the highest. The entry with key `0000` is
+    // the default. If NTP pool is not present in an entry, we use the
+    // value from the `0000` default or `pool.ntp.org` if none
+    // exists. The key decimal values need not be contiguous.
+    //
+    // For example (using [FF] for the 0xFF separator bytes):
+    // 0000=Apple Corp[FF]SuperSecret[FF]pool.ntp.org
+    // 0001=SecretFBIvan[FF]VeryySeqret![FF]pool.kernel.org
+    // 0037=MyOpenWifi[FF]OpenWide
+    nvs_iterator_t it = NULL;
+    esp_err_t st = nfs_entry_find_in_handle(wifiNVSH, NVS_TYPE_ANY, &it);
+
+    while (st == ESP_OK) {
+      nvs_entry_info_t info;
+      nvs_entry_info(it, &info);
+      ESP_LOGI(TAG, "NVS: '%s' type %d", info.key, info.type);
+      st = nvs_entry_next(&it);
+    }
+
+    if (it != NULL) nvs_release_iterator(it);
+
+    // XXX TODO place the entries into a sorted list and return it.
+}
+
+
 void app_main(void) {
   printChipInfo();
+
   setupI2C();
   setupLCD();
   setupBacklightPWM();
   setupTouch();
+
+  setNVS();
+
+  setupStyles();
+  setupKeyboard();
+  setupStatusBar();
+  setupPasswordBox();
+  setupSettings();
+
+  setupNetwork();
   setupClockUI();
 
   while (1) {

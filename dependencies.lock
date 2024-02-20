@@ -11,6 +11,12 @@ dependencies:
       service_url: https://api.components.espressif.com/
       type: service
     version: 1.1.0
+  espressif/esp_lvgl_port:
+    component_hash: b43dc04720d126cbfe14d53a84787e4c24b7bd7f15468e224c930ad3ffb32258
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.4.0
   idf:
     component_hash: null
     source:
@@ -22,6 +28,6 @@ dependencies:
       path: /home/alan/ha/wallclock/components/lvgl__lvgl
       type: local
     version: 8.3.11
-manifest_hash: 4b38e77889d2be935e14b2d2234672f7d1065abe237a640a94dc23292174db1a
+manifest_hash: 302d3d82160d059b6bc15ff10c336ef8495edd6be793e20c5398486c82ea2d94
 target: esp32s3
 version: 1.0.0

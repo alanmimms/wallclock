@@ -110,3 +110,22 @@ a good little computer.
   time? Scatterchart gets ~16FPS with double buffering. While this is
   surely enough for a wall clock, it somehow seems inelegant to leave
   this poor little machine working so hard to accomplish so little.
+
+
+# UI and Functional Notes
+
+* In normal operation, Wallclock shows the time, day and date, a
+  Settings icon button, and a status bar.
+
+* Clicking the Settings button brings up the settings UI:
+  * List of WiFi APs known to Wallclock and a UI to change or delete
+    any of these.
+  * A button to add more WiFi APs by scanning for them and entering
+    credentials and an NTP pool hostname list.
+
+* Wallclock saves in its internal flash storage an encrypted set of
+  WiFi credentials for some number of WiFi APs it can associate with.
+
+* If WiFi doesn't find any authenticatable, functioning, and NTP
+  reachable WiFi access points it knows about, the status bar will
+  show *Internet Down* or *Network Time Protocol Down* status.
