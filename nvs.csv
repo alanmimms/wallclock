@@ -1,0 +1,5 @@
+key,type,encoding,value
+WiFi,namespace,,
+w000ssid,data,string,Starview
+w000pass,data,string,8784bannerridge
+w000sntp,data,string,pool.ntp.org

@@ -16,8 +16,9 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_timer.h"
-
 #include "nvs_flash.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 
 #include "esp_lcd_touch.h"
 #include "esp_lvgl_port.h"
@@ -30,6 +31,9 @@
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "lwip/ip_addr.h"
+
+#include "dlink.h"
 
 
 static const char *TAG = "wallclock";
@@ -82,11 +86,20 @@ static lv_obj_t *popupBoxCloseBtn;
 
 static int foundNetworks = 0;
 unsigned long networkTimeout = 10 * 1000;
-String ssidName, ssidPW;
 
-TaskHandle_t ntScanTaskHandler, ntConnectTaskHandler;
-std::vector<String> foundWifiList;
 
+// Doubly-linked-list of WiFi SSID, password, and SNTP host names.
+typedef struct sWiFiEntry {
+  tDLEntry dl;			/* MUST be first element */
+  char *ssidP;			/* Pointer to NUL terminated SSID name */
+  char *passP;			/* Pointer to NUL terminated password */
+  char *sntpP;			/* Pointer to NUL terminated semicolon delimited list of NTP hosts */
+} tWiFiEntry;
+
+static tWiFiEntry wifiList = {
+  .dl.prevP = &wifiList.dl,
+  .dl.nextP = &wifiList.dl,
+};
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
 // avoid potential tearing effect.
@@ -379,15 +392,15 @@ static void setupNetwork(void) {
 
 
 static void setupStyles(void) {
-  lv_style_init(&border_style);
-  lv_style_set_border_width(&border_style, 2);
-  lv_style_set_border_color(&border_style, lv_color_black());
+  lv_style_init(&borderStyle);
+  lv_style_set_border_width(&borderStyle, 2);
+  lv_style_set_border_color(&borderStyle, lv_color_black());
 
-  lv_style_init(&popupBox_style);
-  lv_style_set_radius(&popupBox_style, 10);
-  lv_style_set_bg_opa(&popupBox_style, LV_OPA_COVER);
-  lv_style_set_border_color(&popupBox_style, lv_palette_main(LV_PALETTE_BLUE));
-  lv_style_set_border_width(&popupBox_style, 5);
+  lv_style_init(&popupBoxStyle);
+  lv_style_set_radius(&popupBoxStyle, 10);
+  lv_style_set_bg_opa(&popupBoxStyle, LV_OPA_COVER);
+  lv_style_set_border_color(&popupBoxStyle, lv_palette_main(LV_PALETTE_BLUE));
+  lv_style_set_border_width(&popupBoxStyle, 5);
 }
 
 
@@ -400,7 +413,7 @@ static void setupKeyboard(void) {
 static void setupSettings(void) {
   settings = lv_obj_create(lv_scr_act());
   lv_obj_add_style(settings, &borderStyle, 0);
-  lv_obj_set_size(settings, tft.width() - 100, tft.height() - 40);
+  lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
   lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
 
   settingsLabel = lv_label_create(settings);
@@ -410,69 +423,70 @@ static void setupSettings(void) {
   settingsCloseBtn = lv_btn_create(settings);
   lv_obj_set_size(settingsCloseBtn, 30, 30);
   lv_obj_align(settingsCloseBtn, LV_ALIGN_TOP_RIGHT, 0, -10);
-  lv_obj_add_event_cb(settingsCloseBtn, btn_event_cb, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(settingsCloseBtn, buttonEventCB, LV_EVENT_ALL, NULL);
   lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
   lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
   lv_obj_center(btnSymbol);
 
   settingsWiFiSwitch = lv_switch_create(settings);
-  lv_obj_add_event_cb(settingsWiFiSwitch, btn_event_cb, LV_EVENT_ALL, NULL);
+  lv_obj_add_event_cb(settingsWiFiSwitch, buttonEventCB, LV_EVENT_ALL, NULL);
   lv_obj_align_to(settingsWiFiSwitch, settingsLabel, LV_ALIGN_TOP_RIGHT, 60, -10);
   lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
 
   wfList = lv_list_create(settings);
-  lv_obj_set_size(wfList, tft.width() - 140, 210);
+  lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
   lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
 }
 
 
-typedef struct sWiFiEntry {
-  unsigned short key;
-} tWiFiEntry;
-
-
 // Read our NVS variables
 static void setupNVS(void) {
-    // Initialize NVS subsystem to use default partition.
-    ESP_ERROR_CHECK(nvs_flash_init());
+  // Initialize NVS subsystem to use default partition.
+  ESP_ERROR_CHECK(nvs_flash_init());
 
-    // Open our NVS namespace.
-    nvs_handle_t wifiNVSH;
-    ESP_ERROR_CHECK(nvs_open("WiFi", NVS_READONLY, &h));
+  // Open our NVS namespace.
+  nvs_handle_t wifiNVSH;
+  ESP_ERROR_CHECK(nvs_open("WiFi", NVS_READONLY, &h));
 
-    nvs_stats_t stats;
-    ESP_ERROR_CHECK(nvs_get_stats(NULL, &stats));
-    ESP_LOGI(TAG, "NVS: used=%d  free=%d  total=%d  nscount=%d",
-             stats.used_entries, stats.free_entries, stats.total_entries, stats.namespace_count);
+  nvs_stats_t stats;
+  ESP_ERROR_CHECK(nvs_get_stats(NULL, &stats));
+  ESP_LOGI(TAG, "NVS: used=%d  free=%d  total=%d  nscount=%d",
+	   stats.used_entries, stats.free_entries, stats.total_entries, stats.namespace_count);
 
-    // In the `WiFi` namespace, read the list of WiFi APs and
-    // credentials and NTP pool names.  Each entry is with key as a
-    // four digit decimal number like `0001` whose value consists of a
-    // single string with fields separated by 0xFF bytes and
-    // containing the AP name, the password, and the optional NTP pool
-    // semicolon separated list.  These are tried in order from the
-    // lowest numbered to the highest. The entry with key `0000` is
-    // the default. If NTP pool is not present in an entry, we use the
-    // value from the `0000` default or `pool.ntp.org` if none
-    // exists. The key decimal values need not be contiguous.
-    //
-    // For example (using [FF] for the 0xFF separator bytes):
-    // 0000=Apple Corp[FF]SuperSecret[FF]pool.ntp.org
-    // 0001=SecretFBIvan[FF]VeryySeqret![FF]pool.kernel.org
-    // 0037=MyOpenWifi[FF]OpenWide
-    nvs_iterator_t it = NULL;
-    esp_err_t st = nfs_entry_find_in_handle(wifiNVSH, NVS_TYPE_ANY, &it);
+  // In the `WiFi` namespace, read the list of WiFi APs and
+  // credentials and NTP pool names.  Each entry is with key as a
+  // four digit decimal number like `0001` whose value consists of a
+  // single string with fields separated by 0xFF bytes and
+  // containing the AP name, the password, and the optional NTP pool
+  // semicolon separated list.  These are tried in order from the
+  // lowest numbered to the highest. The entry with key `0000` is
+  // the default. If NTP pool is not present in an entry, we use the
+  // value from the `0000` default or `pool.ntp.org` if none
+  // exists. The key decimal values need not be contiguous.
+  //
+  // For example (using [FF] for the 0xFF separator bytes):
+  // 0000=Apple Corp[FF]SuperSecret[FF]pool.ntp.org
+  // 0001=SecretFBIvan[FF]VeryySeqret![FF]pool.kernel.org
+  // 0037=MyOpenWifi[FF]OpenWide
+  nvs_iterator_t it = NULL;
+  esp_err_t st = nvs_entry_find_in_handle(wifiNVSH, NVS_TYPE_ANY, &it);
 
-    while (st == ESP_OK) {
-      nvs_entry_info_t info;
-      nvs_entry_info(it, &info);
-      ESP_LOGI(TAG, "NVS: '%s' type %d", info.key, info.type);
-      st = nvs_entry_next(&it);
-    }
+  while (st == ESP_OK) {
+    nvs_entry_info_t info;
+    nvs_entry_info(it, &info);
+    ESP_LOGI(TAG, "NVS: '%s' type %d", info.key, info.type);
+    st = nvs_entry_next(&it);
+  }
 
-    if (it != NULL) nvs_release_iterator(it);
+  if (it != NULL) nvs_release_iterator(it);
 
-    // XXX TODO place the entries into a sorted list and return it.
+  // XXX TODO place the entries into a sorted list and return it.
+}
+
+
+static void setupSNTP(void) {
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
 }
 
 
@@ -484,7 +498,8 @@ void app_main(void) {
   setupBacklightPWM();
   setupTouch();
 
-  setNVS();
+  setupNVS();
+  setupSNTP();
 
   setupStyles();
   setupKeyboard();

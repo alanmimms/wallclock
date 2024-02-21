@@ -6,4 +6,4 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 project(wallclock)
 
-nvs_create_partition_image("nvs" partition.csv)
+nvs_create_partition_image("nvs" nvs.csv)

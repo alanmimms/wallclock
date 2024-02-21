@@ -1,4 +1,11 @@
 dependencies:
+  esp32-wifi-manager:
+    component_hash: 809c587c9f074ae699ee3d6fcec580873da15ed86303c8e7c7ba408ce5a1a474
+    source:
+      git: https://github.com/huardti/esp32-wifi-manager.git
+      path: .
+      type: git
+    version: 278319504537e8d0b6485284eeb35c4df2b9ad68
   espressif/esp_lcd_touch:
     component_hash: d4d8f2dc33205797169a97a02e0d89a8982f59fe0509129b54422052b8522f59
     source:
@@ -17,17 +24,23 @@ dependencies:
       service_url: https://api.components.espressif.com/
       type: service
     version: 1.4.0
+  espressif/mdns:
+    component_hash: d96d277207c4fec77ec290b7a8b0ca4043e10f407df0ff6aa52e54a94f0c54a5
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.2.4
   idf:
     component_hash: null
     source:
       type: idf
-    version: 5.1.2
+    version: 5.2.0
   lvgl__lvgl:
     component_hash: null
     source:
       path: /home/alan/ha/wallclock/components/lvgl__lvgl
       type: local
     version: 8.3.11
-manifest_hash: 302d3d82160d059b6bc15ff10c336ef8495edd6be793e20c5398486c82ea2d94
+manifest_hash: 07951018256f2db5197d23df981024f7bf637309e042be2011baa8cbd8219de1
 target: esp32s3
 version: 1.0.0
