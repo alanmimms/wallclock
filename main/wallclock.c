@@ -404,6 +404,59 @@ static void setupStyles(void) {
 }
 
 
+static void buttonEventCB(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t *btn = lv_event_get_target(e);
+
+  if (code == LV_EVENT_CLICKED) {
+    if (btn == settingBtn) {
+      lv_obj_clear_flag(settings, LV_OBJ_FLAG_HIDDEN);
+    } else if (btn == settingCloseBtn) {
+      lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
+    } else if (btn == mboxConnectBtn) {
+      ssidPW = String(lv_textarea_get_text(mboxPassword));
+
+      networkConnector();
+      lv_obj_move_background(mboxConnect);
+      popupMsgBox("Connecting!", "Attempting to connect to the selected network.");
+    } else if (btn == mboxCloseBtn) {
+      lv_obj_move_background(mboxConnect);
+    } else if (btn == popupBoxCloseBtn) {
+      lv_obj_move_background(popupBox);
+    }
+
+  } else if (code == LV_EVENT_VALUE_CHANGED) {
+    if (btn == settingWiFiSwitch) {
+
+      if (lv_obj_has_state(btn, LV_STATE_CHECKED)) {
+
+        if (ntScanTaskHandler == NULL) {
+          networkStatus = NETWORK_SEARCHING;
+          networkScanner();
+          timer = lv_timer_create(timerForNetwork, 1000, wfList);
+          lv_list_add_text(wfList, "WiFi: Looking for Networks...");
+        }
+
+      } else {
+
+        if (ntScanTaskHandler != NULL) {
+          networkStatus = NONE;
+          vTaskDelete(ntScanTaskHandler);
+          ntScanTaskHandler = NULL;
+          lv_timer_del(timer);
+          lv_obj_clean(wfList);
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+          WiFi.disconnect(true);
+          lv_label_set_text(timeLabel, "WiFi Not Connected!    " LV_SYMBOL_CLOSE);
+        }
+      }
+    }
+  }
+}
+
+
 static void setupKeyboard(void) {
   keyboard = lv_keyboard_create(lv_scr_act());
   lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
