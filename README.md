@@ -131,9 +131,9 @@ a good little computer.
   show *Internet Down* or *Network Time Protocol Down* status.
 
 See
-[https://lucid.app/lucidchart/cb587227-fdc3-4b95-8adb-bc69c5b08a50/edit
+[this link](https://lucid.app/lucidchart/cb587227-fdc3-4b95-8adb-bc69c5b08a50/edit
 ?viewport_loc=-139%2C759%2C1337%2C973%2C0_0
-&invitationId=inv_fbb3ebb5-4466-4457-9be7-2652f4b555d6](this link) for
+&invitationId=inv_fbb3ebb5-4466-4457-9be7-2652f4b555d6) for
 the UI design wireframe I made with the unfortunately somewhat
 crippled free version of the wonderful tool LucidChart. Each "slide"
 in the LucidChart is framed as a slide solely so I could see what the
