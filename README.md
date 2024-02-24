@@ -135,6 +135,6 @@ See
 for the UI design wireframe I made with the unfortunately somewhat
 crippled free version of the wonderful tool LucidChart. Each "slide"
 in the LucidChart is framed as a slide solely so I could see what the
-UI would look like in a frame. (LucidChart can do way more than slide
-presentations!)
-
+UI would look like in a frame. LucidChart can do way more than slide
+presentations! Note: I have no affiliation with the Lucid.app people
+other than using and liking their tools.

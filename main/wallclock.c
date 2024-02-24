@@ -71,7 +71,6 @@ static lv_obj_t *timeW;
 static lv_obj_t *settings;
 static lv_obj_t *settingsBtn;
 static lv_obj_t *settingsCloseBtn;
-static lv_obj_t *settingsWiFiSwitch;
 static lv_obj_t *wfList;
 static lv_obj_t *settingsLabel;
 static lv_obj_t *mboxConnect;
@@ -84,21 +83,32 @@ static lv_obj_t *popupBox;
 static lv_obj_t *popupBoxCloseBtn;
 
 
-static int foundNetworks = 0;
-unsigned long networkTimeout = 10 * 1000;
+static const char *ssid;
+static const char *ssidPW;
 
 
-// Doubly-linked-list of WiFi SSID, password, and SNTP host names.
+// Doubly-linked-list of WiFi SSIDs and their passwords.
 typedef struct sWiFiEntry {
   tDLEntry dl;			/* MUST be first element */
   char *ssidP;			/* Pointer to NUL terminated SSID name */
   char *passP;			/* Pointer to NUL terminated password */
-  char *sntpP;			/* Pointer to NUL terminated semicolon delimited list of NTP hosts */
 } tWiFiEntry;
 
 static tWiFiEntry wifiList = {
   .dl.prevP = &wifiList.dl,
   .dl.nextP = &wifiList.dl,
+};
+
+
+// Doubly-linked-list of NTP servers.
+typedef struct sNTPEntry {
+  tDLEntry dl;			/* MUST be first element */
+  char *server;			/* Pointer to NUL terminated NTP server hostname */
+} tNTPEntry;
+
+static tNTPEntry ntpList = {
+  .dl.prevP = &ntpList.dl,
+  .dl.nextP = &ntpList.dl,
 };
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
@@ -113,7 +123,7 @@ static void lvglTickCB(void *) {
 }
 
 
-// Timer callback for updating the seconds.
+// Timer callback for updating the displayed time and date every period.
 //
 // XXX Does this get called with lvgl_port_lock already held or do I
 // need to protect here or will that hang or what?
@@ -394,13 +404,40 @@ static void setupNetwork(void) {
 static void setupStyles(void) {
   lv_style_init(&borderStyle);
   lv_style_set_border_width(&borderStyle, 2);
-  lv_style_set_border_color(&borderStyle, lv_color_black());
+  lv_style_set_border_color(&borderStyle, lv_palette_main(LV_PALETTE_TEAL));
 
   lv_style_init(&popupBoxStyle);
   lv_style_set_radius(&popupBoxStyle, 10);
   lv_style_set_bg_opa(&popupBoxStyle, LV_OPA_COVER);
-  lv_style_set_border_color(&popupBoxStyle, lv_palette_main(LV_PALETTE_BLUE));
+  lv_style_set_border_color(&popupBoxStyle, lv_palette_main(LV_PALETTE_BLUE_GREY));
   lv_style_set_border_width(&popupBoxStyle, 5);
+}
+
+
+static void settingsButtonEventCB(lv_event_t *e) {
+
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    lv_obj_clear_flag(settings, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+
+static void settingsCloseButtonEventCB(lv_event_t *e) {
+
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+
+static void mboxConnectButtonEventCB(lv_event_t *e) {
+
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    ssidPW = String(lv_textarea_get_text(mboxPassword));
+    networkConnector();
+    lv_obj_move_background(mboxConnect);
+    popupMsgBox("Connecting!", "Attempting to connect to the selected network.");
+  }
 }
 
 
@@ -409,11 +446,7 @@ static void buttonEventCB(lv_event_t *e) {
   lv_obj_t *btn = lv_event_get_target(e);
 
   if (code == LV_EVENT_CLICKED) {
-    if (btn == settingBtn) {
-      lv_obj_clear_flag(settings, LV_OBJ_FLAG_HIDDEN);
-    } else if (btn == settingCloseBtn) {
-      lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
-    } else if (btn == mboxConnectBtn) {
+    if (btn == mboxConnectBtn) {
       ssidPW = String(lv_textarea_get_text(mboxPassword));
 
       networkConnector();
@@ -426,32 +459,12 @@ static void buttonEventCB(lv_event_t *e) {
     }
 
   } else if (code == LV_EVENT_VALUE_CHANGED) {
-    if (btn == settingWiFiSwitch) {
 
-      if (lv_obj_has_state(btn, LV_STATE_CHECKED)) {
-
-        if (ntScanTaskHandler == NULL) {
-          networkStatus = NETWORK_SEARCHING;
-          networkScanner();
-          timer = lv_timer_create(timerForNetwork, 1000, wfList);
-          lv_list_add_text(wfList, "WiFi: Looking for Networks...");
-        }
-
-      } else {
-
-        if (ntScanTaskHandler != NULL) {
-          networkStatus = NONE;
-          vTaskDelete(ntScanTaskHandler);
-          ntScanTaskHandler = NULL;
-          lv_timer_del(timer);
-          lv_obj_clean(wfList);
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-          WiFi.disconnect(true);
-          lv_label_set_text(timeLabel, "WiFi Not Connected!    " LV_SYMBOL_CLOSE);
-        }
-      }
+    if (ntScanTaskHandler == NULL) {
+      networkStatus = NETWORK_SEARCHING;
+      networkScanner();
+      timer = lv_timer_create(timerForNetwork, 1000, wfList);
+      lv_list_add_text(wfList, "WiFi: Looking for Networks...");
     }
   }
 }
@@ -480,11 +493,6 @@ static void setupSettings(void) {
   lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
   lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
   lv_obj_center(btnSymbol);
-
-  settingsWiFiSwitch = lv_switch_create(settings);
-  lv_obj_add_event_cb(settingsWiFiSwitch, buttonEventCB, LV_EVENT_ALL, NULL);
-  lv_obj_align_to(settingsWiFiSwitch, settingsLabel, LV_ALIGN_TOP_RIGHT, 60, -10);
-  lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
 
   wfList = lv_list_create(settings);
   lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
