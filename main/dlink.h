@@ -25,4 +25,14 @@ static inline void DLInsertAfter(tDLEntry *p, tDLEntry *newP) {
   p->nextP = newP;
 }
 
+
+// Delete `oldP` node from its DL.
+static inline void DLRemove(tDLEntry *oldP) {
+  oldP->prevP->nextP = oldP->nextP->prev;
+
+  // Make the newly deleted node point to itself for safety now that
+  // it isn't in the list anymore.
+  oldP->prevP = oldP->nextP = oldP;
+}
+
 #endif
