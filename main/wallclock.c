@@ -33,8 +33,6 @@
 #include "lwip/sys.h"
 #include "lwip/ip_addr.h"
 
-#include "dlink.h"
-
 
 static const char *TAG = "wallclock";
 
@@ -59,62 +57,125 @@ static int minutes = 0;
 static int seconds = 0;
 
 
-// Styles and UI widgets.
-static lv_style_t borderStyle;
-static lv_style_t popupBoxStyle;
+// These are initialized from NVS and copied out of textarea when
+// updated by UI.
+static char *wifiSSID;
+static char *wifiPass;
+
+
+// Define all of our styles by repeated applications of DO1 macro.
+// DO1(newStyleName, settingsToApply...)
+//
+// Doing this here this way allows all of the styles and their
+// settings to be gathered together into one place even though their
+// declarations and code to initialize them is tedious and must be
+// scattered into at least two places. This macro-fu is meant to make
+// the process a bit less painful.
+#define STYLES	\
+  DO1(baseStyle, \
+     SET1(bg_color, lv_palette_main(LV_PALETTE_LIGHT_BLUE)) \
+     SET1(border_color, lv_palette_darken(LV_PALETTE_LIGHT_BLUE, 3)) \
+     SET1(border_width, 2) \
+     SET1(radius, 10) \
+     SET1(shadow_width, 10) \
+     SET1(shadow_ofs_y, 5) \
+     SET1(shadow_opa, LV_OPA_50) \
+     SET1(text_color, lv_color_white()) \
+     SET1(width, 100) \
+     SET1(height, LV_SIZE_CONTENT) \
+    )				    \
+  DO1(statusStyle, \
+    SET1(text_font, &lv_font_montserrat_10)) \
+  DO1(buttonStyle,\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREY))) \
+  DO1(okButtonStyle,\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREEN))) \
+  DO1(cancelButtonStyle,\
+      SET1(border_color, lv_palette_main(LV_PALETTE_ORANGE))) \
+
+// First, declare the static variables for our styles
+#define DO1(S, SETTINGS...)	static lv_style_t S;
+    STYLES
+#undef DO1
+
+
+static lv_style_t popupStyle;
+static lv_style_t popupWidgetStyle;
+static lv_style_t popupHeadingStyle;
+static lv_style_t textAreaStyle;
+static lv_style_t timeStyle;
+static lv_style_t selectedItemStyle;
+
+/*static lv_style_t buttonStyle;
+static lv_style_t okButtonStyle;
+static lv_style_t cancelButtonStyle;*/
 
 static lv_disp_t *disp;
 extern lv_font_t LoraBold;
 
-static lv_obj_t *timeW;
 
-static lv_obj_t *settings;
-static lv_obj_t *settingsBtn;
-static lv_obj_t *settingsCloseBtn;
-static lv_obj_t *wfList;
-static lv_obj_t *settingsLabel;
-static lv_obj_t *mboxConnect;
-static lv_obj_t *mboxTitle;
-static lv_obj_t *mboxPassword;
-static lv_obj_t *mboxConnectBtn;
-static lv_obj_t *mboxCloseBtn;
-static lv_obj_t *keyboard;
-static lv_obj_t *popupBox;
-static lv_obj_t *popupBoxCloseBtn;
-
-
-static const char *ssid;
-static const char *ssidPW;
+// Each UI screen is a struct whose members are its UI elements.  I
+// don't bother putting things like static headings in this since they
+// never need to be accessed after they're initially configured
+// properly.
+//
+// For a given popup, the struct only exists when the popup is
+// displayed. When it's popped down we free it.
+static struct timeS {
+  lv_obj_t *window;
+  lv_obj_t *settingsButton;
+  lv_obj_t *time;
+  lv_obj_t *seconds;
+  lv_obj_t *date;
+} *timeP;
 
 
-// Doubly-linked-list of WiFi SSIDs and their passwords.
-typedef struct sWiFiEntry {
-  tDLEntry dl;			/* MUST be first element */
-  char *ssidP;			/* Pointer to NUL terminated SSID name */
-  char *passP;			/* Pointer to NUL terminated password */
-} tWiFiEntry;
+#define N_NTP_SERVERS	3
 
-static tWiFiEntry wifiList = {
-  .dl.prevP = &wifiList.dl,
-  .dl.nextP = &wifiList.dl,
-};
+static struct settingsS {
+  lv_obj_t *timeFormat;		/* Checkbox */
+  lv_obj_t *showSeconds;	/* Checkbox */
+  lv_obj_t *showDayDate;	/* Checkbox */
+  lv_obj_t *ntp[N_NTP_SERVERS];	/* Each is a textarea */
+  lv_obj_t *ok;			/* Button */
+  lv_obj_t *cancel;		/* Button */
+} settingsP;
 
 
-// Doubly-linked-list of NTP servers.
-typedef struct sNTPEntry {
-  tDLEntry dl;			/* MUST be first element */
-  char *server;			/* Pointer to NUL terminated NTP server hostname */
-} tNTPEntry;
+static struct wifiS {
+  lv_obj_t *list;
+  lv_obj_t *ok;
+  lv_obj_t *cancel;
+  lv_obj_t *wifiList;		/* button matrix */
+} *wifiP;
 
-static tNTPEntry ntpList = {
-  .dl.prevP = &ntpList.dl,
-  .dl.nextP = &ntpList.dl,
-};
+
+static struct passwordS {
+  lv_obj_t *pass;		/* textarea userdata=keyboard when focused */
+  lv_obj_t *showPassword;
+  lv_obj_t *ok;
+  lv_obj_t *cancel;
+} *passwordP;
+
+
+// https://serverfault.com/questions/45439/what-is-the-maximum-length-of-a-wifi-access-points-ssid
+#define SSID_LENGTH	33
+
+// https://stackoverflow.com/questions/18006390/why-is-the-wpa2-psk-key-length-limited-to-63-characters
+#define PASS_LENGTH	64
+
+
+// The NTP server list is fixed in size. Its NUL terminated string
+// values are filled in from NVS on boot and modified by copying from
+// UI. An empty element is signified by a NULL pointer.
+#define N_NTP_SERVERS	3
+static char *ntpList[N_NTP_SERVERS];
+
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
 // avoid potential tearing effect.
-SemaphoreHandle_t semVsyncEnd;
-SemaphoreHandle_t semGuiReady;
+static SemaphoreHandle_t semVsyncEnd;
+static SemaphoreHandle_t semGuiReady;
 
 
 static void lvglTickCB(void *) {
@@ -145,6 +206,7 @@ static void secondsCB(lv_timer_t *timerP) {
     }
   }
 
+  lv_obj_t *timeW = (lv_obj_t *) timerP->user_data;
   lv_label_set_text_fmt(timeW, "%02d:%02d", hours, minutes);
 }
 
@@ -182,7 +244,7 @@ static void setupClockUI(void) {
   lv_obj_t *screenW = lv_disp_get_scr_act(disp);
 
   ESP_LOGI(TAG, "[set up clock UI]");
-  timeW = lv_label_create(screenW);
+  lv_obj_t *timeW = lv_label_create(screenW);
   lv_label_set_text_static(timeW, "00:00");
   lv_obj_set_style_text_font(timeW, &LoraBold, LV_PART_MAIN);
   lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -192,7 +254,7 @@ static void setupClockUI(void) {
   int h = lv_obj_get_height(timeW);
   lv_obj_set_pos(timeW, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
 
-  lv_timer_create(secondsCB, 1000, NULL);
+  lv_timer_create(secondsCB, 1000, timeW);
 }
 
 
@@ -402,15 +464,21 @@ static void setupNetwork(void) {
 
 
 static void setupStyles(void) {
-  lv_style_init(&borderStyle);
-  lv_style_set_border_width(&borderStyle, 2);
-  lv_style_set_border_color(&borderStyle, lv_palette_main(LV_PALETTE_TEAL));
+// Define each style by initializing its static variable as a new
+// style and calling each of the SETTINGS style setting functions with
+// their respective parameters.
+#define SET1(F, ARGS...)	lv_style_set_ ## F(s, ARGS);
 
-  lv_style_init(&popupBoxStyle);
-  lv_style_set_radius(&popupBoxStyle, 10);
-  lv_style_set_bg_opa(&popupBoxStyle, LV_OPA_COVER);
-  lv_style_set_border_color(&popupBoxStyle, lv_palette_main(LV_PALETTE_BLUE_GREY));
-  lv_style_set_border_width(&popupBoxStyle, 5);
+#define DO1(S, SETTINGS...)		\
+  {					\
+    lv_style_t *s = &S;			\
+    lv_style_init(s);			\
+    SETTINGS				\
+  }
+
+  STYLES
+#undef SET1
+#undef DO1
 }
 
 
@@ -477,7 +545,7 @@ static void setupKeyboard(void) {
 
 
 static void setupSettings(void) {
-  settings = lv_obj_create(lv_scr_act());
+  lv_obj_t *settings = lv_obj_create(lv_scr_act());
   lv_obj_add_style(settings, &borderStyle, 0);
   lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
   lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
@@ -500,6 +568,10 @@ static void setupSettings(void) {
 }
 
 
+static void destroySettings(void) {
+}
+
+
 // Read our NVS variables
 static void setupNVS(void) {
   // Initialize NVS subsystem to use default partition.
@@ -507,7 +579,7 @@ static void setupNVS(void) {
 
   // Open our NVS namespace.
   nvs_handle_t wifiNVSH;
-  ESP_ERROR_CHECK(nvs_open("WiFi", NVS_READONLY, &h));
+  ESP_ERROR_CHECK(nvs_open("WiFi", NVS_READONLY, &wifiNVSH));
 
   nvs_stats_t stats;
   ESP_ERROR_CHECK(nvs_get_stats(NULL, &stats));
