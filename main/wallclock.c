@@ -1,4 +1,8 @@
+// TODO:
+// * Needs to set DST when appropriate.
+
 #include <stdio.h>
+#include <time.h>
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -56,61 +60,26 @@ static int hours = 0;
 static int minutes = 0;
 static int seconds = 0;
 
-
 // These are initialized from NVS and copied out of textarea when
 // updated by UI.
 static char *wifiSSID;
 static char *wifiPass;
 
 
-// Define all of our styles by repeated applications of DO1 macro.
-// DO1(newStyleName, settingsToApply...)
-//
-// Doing this here this way allows all of the styles and their
-// settings to be gathered together into one place even though their
-// declarations and code to initialize them is tedious and must be
-// scattered into at least two places. This macro-fu is meant to make
-// the process a bit less painful.
-#define STYLES	\
-  DO1(baseStyle, \
-     SET1(bg_color, lv_palette_main(LV_PALETTE_LIGHT_BLUE)) \
-     SET1(border_color, lv_palette_darken(LV_PALETTE_LIGHT_BLUE, 3)) \
-     SET1(border_width, 2) \
-     SET1(radius, 10) \
-     SET1(shadow_width, 10) \
-     SET1(shadow_ofs_y, 5) \
-     SET1(shadow_opa, LV_OPA_50) \
-     SET1(text_color, lv_color_white()) \
-     SET1(width, 100) \
-     SET1(height, LV_SIZE_CONTENT) \
-    )				    \
-  DO1(statusStyle, \
-    SET1(text_font, &lv_font_montserrat_10)) \
-  DO1(buttonStyle,\
-      SET1(border_color, lv_palette_main(LV_PALETTE_GREY))) \
-  DO1(okButtonStyle,\
-      SET1(border_color, lv_palette_main(LV_PALETTE_GREEN))) \
-  DO1(cancelButtonStyle,\
-      SET1(border_color, lv_palette_main(LV_PALETTE_ORANGE))) \
+static struct {
+  lv_style_t base;
+  lv_style_t popup;
+  lv_style_t popupWidget;
+  lv_style_t popupHeading;
+  lv_style_t textArea;
+  lv_style_t time;
+  lv_style_t selectedItem;
+} styles;
 
-// First, declare the static variables for our styles
-#define DO1(S, SETTINGS...)	static lv_style_t S;
-    STYLES
-#undef DO1
-
-
-static lv_style_t popupStyle;
-static lv_style_t popupWidgetStyle;
-static lv_style_t popupHeadingStyle;
-static lv_style_t textAreaStyle;
-static lv_style_t timeStyle;
-static lv_style_t selectedItemStyle;
-
-/*static lv_style_t buttonStyle;
-static lv_style_t okButtonStyle;
-static lv_style_t cancelButtonStyle;*/
 
 static lv_disp_t *disp;
+static lv_obj_t *keyboard;
+static lv_obj_t *settings;
 extern lv_font_t LoraBold;
 
 
@@ -121,41 +90,42 @@ extern lv_font_t LoraBold;
 //
 // For a given popup, the struct only exists when the popup is
 // displayed. When it's popped down we free it.
-static struct timeS {
+static struct {
   lv_obj_t *window;
   lv_obj_t *settingsButton;
   lv_obj_t *time;
   lv_obj_t *seconds;
   lv_obj_t *date;
-} *timeP;
+} timeUI;
 
 
 #define N_NTP_SERVERS	3
 
-static struct settingsS {
+static struct {
   lv_obj_t *timeFormat;		/* Checkbox */
   lv_obj_t *showSeconds;	/* Checkbox */
   lv_obj_t *showDayDate;	/* Checkbox */
   lv_obj_t *ntp[N_NTP_SERVERS];	/* Each is a textarea */
+  lv_obj_t *tzString;		/* Timezone in TZ envar format (e.g., PST-08 for US Pacific) */
   lv_obj_t *ok;			/* Button */
   lv_obj_t *cancel;		/* Button */
-} settingsP;
+} settingsUI;
 
 
-static struct wifiS {
+static struct {
   lv_obj_t *list;
   lv_obj_t *ok;
   lv_obj_t *cancel;
   lv_obj_t *wifiList;		/* button matrix */
-} *wifiP;
+} wifiUI;
 
 
-static struct passwordS {
+static struct {
   lv_obj_t *pass;		/* textarea userdata=keyboard when focused */
   lv_obj_t *showPassword;
   lv_obj_t *ok;
   lv_obj_t *cancel;
-} *passwordP;
+} passwordUI;
 
 
 // https://serverfault.com/questions/45439/what-is-the-maximum-length-of-a-wifi-access-points-ssid
@@ -206,8 +176,21 @@ static void secondsCB(lv_timer_t *timerP) {
     }
   }
 
-  lv_obj_t *timeW = (lv_obj_t *) timerP->user_data;
-  lv_label_set_text_fmt(timeW, "%02d:%02d", hours, minutes);
+  time_t now;
+  struct tm tm;
+  time(&now);
+  localtime_r(&now, &tm);
+  
+  char buf[64];
+  int st;
+  char *timeFmtP = settings.militaryTime ? "%R" : "%I:%M%p";
+
+  st = strftime(buf, sizeof(buf)-1, timeFmtP, &tod);
+  lv_label_set_text(timeUI.time, buf);
+  lv_label_set_text_fmt(timeUI.seconds, "%02d", seconds);
+
+  int st = strftime(buf, sizeof(buf)-1, "%A %B %d, %Y");
+  lv_label_set_text(timeUI.date, date);
 }
 
 
@@ -244,17 +227,23 @@ static void setupClockUI(void) {
   lv_obj_t *screenW = lv_disp_get_scr_act(disp);
 
   ESP_LOGI(TAG, "[set up clock UI]");
-  lv_obj_t *timeW = lv_label_create(screenW);
-  lv_label_set_text_static(timeW, "00:00");
-  lv_obj_set_style_text_font(timeW, &LoraBold, LV_PART_MAIN);
-  lv_obj_set_style_text_align(timeW, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_update_layout(timeW);
+  timeUI.time = lv_label_create(screenW);
+  lv_label_set_text_static(timeUI.time, "00:00");
+  lv_obj_set_style_text_font(timeUI.time, &LoraBold, LV_PART_MAIN);
+  lv_obj_set_style_text_align(timeUI.time, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_update_layout(timeUI.time);
 
-  int w = lv_obj_get_width(timeW);
-  int h = lv_obj_get_height(timeW);
-  lv_obj_set_pos(timeW, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
+  int w = lv_obj_get_width(timeUI.time);
+  int h = lv_obj_get_height(timeUI.time);
+  lv_obj_set_pos(timeUI.time, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
 
-  lv_timer_create(secondsCB, 1000, timeW);
+  timeUI.seconds = lv_label_create(screenW);
+  lv_label_set_text_static(timeUI.seconds, "00");
+  //  lv_obj_set_style_text_font(timeUI.seconds, &LoraBold, LV_PART_MAIN);
+  lv_obj_set_style_text_align(timeUI.seconds, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+  lv_obj_update_layout(timeUI.seconds);
+
+  lv_timer_create(secondsCB, 1000, NULL);
 }
 
 
@@ -401,8 +390,6 @@ static void setupTouch(void) {
     },
   };
 
-  // XXX need to setup GPIOs?
-
   ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t) I2C_NUM_1, &touchI2CConfig, &touchIOH));
   ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(touchIOH, &touchESPConfig, &touchH));
 
@@ -441,12 +428,13 @@ static void printChipInfo(void) {
 
 
 static void setupI2C(void) {
+
   static const i2c_config_t i2c_conf = {
     .mode = I2C_MODE_MASTER,
-    .sda_io_num = GPIO_NUM_19,
+    .scl_pullup_en = GPIO_PULLUP_ENABLE,
     .sda_pullup_en = GPIO_PULLUP_ENABLE,
     .scl_io_num = GPIO_NUM_20,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    .sda_io_num = GPIO_NUM_19,
     .master.clk_speed = 400 * 1000,
   };
 
@@ -463,22 +451,59 @@ static void setupNetwork(void) {
 }
 
 
-static void setupStyles(void) {
 // Define each style by initializing its static variable as a new
 // style and calling each of the SETTINGS style setting functions with
 // their respective parameters.
+static void setupStyles(void) {
+  // The background color from which we derive borders and 
+  static const unsigned mainBgColor = 0x222244;
+
+#define INIT(STYLE)			lv_style_init(&styles.STYLE)
+#define SET(STYLE,ATTR,PARMS...)	lv_style_set_##ATTR(&styles.STYLE, PARMS)
+
+  INIT(base);
+  SET(base, bg_color, lv_color_hex(mainBgColor));
+  SET(base, border_color, lv_color_lighten(lv_color_hex(mainBgColor), 3));
+  SET(base, border_width, 2);
+  SET(base, radius, 10);
+  SET(base, shadow_width, 10);
+  SET(base, shadow_ofs_y, 5);
+  SET(base, shadow_opa, LV_OPA_50);
+  SET(base, text_color, lv_color_white());
+
+#define STYLES								\
+  DO1(statusStyle,							\
+    SET1(text_font, &lv_font_montserrat_10))				\
+  DO1(buttonStyle,							\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREY)))		\
+  DO1(okButtonStyle,							\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREEN)))		\
+  DO1(cancelButtonStyle,						\
+      SET1(border_color, lv_palette_main(LV_PALETTE_ORANGE)))		\
+  DO1(popupStyle,							\
+      SET1(bg_color, lv_palette_main(LV_PALETTE_ORANGE)))
+
+// First, declare the static variables for our styles
+#define DO1(S, SETTINGS...)	static lv_style_t S;
+    STYLES
+#undef DO1
+
+
 #define SET1(F, ARGS...)	lv_style_set_ ## F(s, ARGS);
 
-#define DO1(S, SETTINGS...)		\
-  {					\
-    lv_style_t *s = &S;			\
-    lv_style_init(s);			\
-    SETTINGS				\
+#define DO1(S, SETTINGS...)			\
+  {						\
+    lv_style_t *s = &S;				\
+    lv_style_init(s);				\
+    SETTINGS					\
   }
 
   STYLES
 #undef SET1
 #undef DO1
+
+#undef SET
+#undef INIT
 }
 
 
@@ -499,17 +524,19 @@ static void settingsCloseButtonEventCB(lv_event_t *e) {
 
 
 static void mboxConnectButtonEventCB(lv_event_t *e) {
-
+#if 0
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
     ssidPW = String(lv_textarea_get_text(mboxPassword));
     networkConnector();
     lv_obj_move_background(mboxConnect);
     popupMsgBox("Connecting!", "Attempting to connect to the selected network.");
   }
+#endif
 }
 
 
 static void buttonEventCB(lv_event_t *e) {
+#if 0
   lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t *btn = lv_event_get_target(e);
 
@@ -535,6 +562,7 @@ static void buttonEventCB(lv_event_t *e) {
       lv_list_add_text(wfList, "WiFi: Looking for Networks...");
     }
   }
+#endif
 }
 
 
@@ -545,6 +573,7 @@ static void setupKeyboard(void) {
 
 
 static void setupSettings(void) {
+#if 0
   lv_obj_t *settings = lv_obj_create(lv_scr_act());
   lv_obj_add_style(settings, &borderStyle, 0);
   lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
@@ -565,6 +594,7 @@ static void setupSettings(void) {
   wfList = lv_list_create(settings);
   lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
   lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
+#endif
 }
 
 
@@ -617,9 +647,27 @@ static void setupNVS(void) {
 }
 
 
+static void setupStatusBar(void) {
+}
+
+
+static void setupPasswordBox(void) {
+}
+
+
+static void networkScanner(void) {
+}
+
+
 static void setupSNTP(void) {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
+}
+
+
+static void setupTimeZone(void) {
+  setenv("TZ", lv_label_get_text(settings.tzString), 1);
+  tzset();
 }
 
 
@@ -639,6 +687,8 @@ void app_main(void) {
   setupStatusBar();
   setupPasswordBox();
   setupSettings();
+
+  setupTimeZone();
 
   setupNetwork();
   setupClockUI();
