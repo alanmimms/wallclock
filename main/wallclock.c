@@ -1,5 +1,15 @@
+// Philosophy:
+//
+// NVS provides values for UI settings like timezone, WiFi SSID, 12 vs
+// 24hr time format, etc. When NVS values are used to set these in the
+// UI, it's the `LV_EVENT_VALUE_CHANGED` callbacks that actually make
+// the clock or WiFi or whatever change. This makes it possible for
+// there to be a single place where each value's setting is
+// implemented and takes into account the first time and every time it
+// changes afterward "for free".
+//
 // TODO:
-// * Needs to set DST when appropriate.
+// 
 
 #include <stdio.h>
 #include <time.h>
@@ -60,6 +70,12 @@ static int hours = 0;
 static int minutes = 0;
 static int seconds = 0;
 
+// Our icons created with https://lvgl.io/tools/imageconverter
+extern const lv_img_dsc_t visible;
+extern const lv_img_dsc_t not_visible;
+extern const lv_img_dsc_t cog;
+
+
 // These are initialized from NVS and copied out of textarea when
 // updated by UI.
 static char *wifiSSID;
@@ -79,29 +95,35 @@ static struct {
 
 static lv_disp_t *disp;
 static lv_obj_t *keyboard;
-static lv_obj_t *settings;
 extern lv_font_t LoraBold;
 
 
-// Each UI screen is a struct whose members are its UI elements.  I
-// don't bother putting things like static headings in this since they
-// never need to be accessed after they're initially configured
-// properly.
+// The display has one LVGL "screen" loaded at a time, and this is
+// used to set the UI mode for wallclock (`timeUI`), settings
+// (`settingsUI`), WiFi SSID scanner (`wifiUI`), WiFi SSID password
+// entry (`passwordUI`), etc. The default at startup time is to load
+// the `timeUI` screen.
 //
-// For a given popup, the struct only exists when the popup is
-// displayed. When it's popped down we free it.
+// Each UI has a `screen` that contains its UI elements. The struct
+// for each UI contains only the things I have to dink around with
+// after creation time.  I don't bother putting things like static
+// headings in this since they never need to be accessed after they're
+// initially configured properly.
 static struct {
-  lv_obj_t *window;
+  lv_obj_t *screen;
   lv_obj_t *settingsButton;
   lv_obj_t *time;
   lv_obj_t *seconds;
   lv_obj_t *date;
+  lv_obj_t *apName;
+  lv_obj_t *ntpName;
 } timeUI;
 
 
 #define N_NTP_SERVERS	3
 
 static struct {
+  lv_obj_t *screen;
   lv_obj_t *timeFormat;		/* Checkbox */
   lv_obj_t *showSeconds;	/* Checkbox */
   lv_obj_t *showDayDate;	/* Checkbox */
@@ -113,6 +135,7 @@ static struct {
 
 
 static struct {
+  lv_obj_t *screen;
   lv_obj_t *list;
   lv_obj_t *ok;
   lv_obj_t *cancel;
@@ -121,11 +144,28 @@ static struct {
 
 
 static struct {
+  lv_obj_t *screen;
   lv_obj_t *pass;		/* textarea userdata=keyboard when focused */
   lv_obj_t *showPassword;
   lv_obj_t *ok;
   lv_obj_t *cancel;
 } passwordUI;
+
+
+// The settings as they are currently set. These come from NVS
+// initially, are modified by the settingsUI, wifiUI, and passwordUI,
+// and are saved back to NVS when changed.
+static struct {
+  u8 twelveHr;			/* Set if 12hr is needed (24hr otherwise) */
+  u8 showSeconds;		/* Display and update seconds */
+  u8 showDayDate;		/* Display day of week and date */
+  char *tz;			/* String for TZ envar */
+  char *ntp1;			/* String for primary NTP site */
+  char *ntp2;			/* String for secondary NTP site */
+  char *ntp3;			/* String for tertiary NTP site */
+  char *ssid;			/* String for current selected WiFi SSID */
+  char *password;		/* String for current selected Wifi SSID's password */
+} settings;
 
 
 // https://serverfault.com/questions/45439/what-is-the-maximum-length-of-a-wifi-access-points-ssid
@@ -179,11 +219,12 @@ static void secondsCB(lv_timer_t *timerP) {
   time_t now;
   struct tm tm;
   time(&now);
+  tzset();
   localtime_r(&now, &tm);
   
   char buf[64];
   int st;
-  char *timeFmtP = settings.militaryTime ? "%R" : "%I:%M%p";
+  char *timeFmtP = settings.twelveHr ? "%I:%M%p" : "%R";
 
   st = strftime(buf, sizeof(buf)-1, timeFmtP, &tod);
   lv_label_set_text(timeUI.time, buf);
@@ -224,26 +265,46 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 
 
 static void setupClockUI(void) {
-  lv_obj_t *screenW = lv_disp_get_scr_act(disp);
-
   ESP_LOGI(TAG, "[set up clock UI]");
-  timeUI.time = lv_label_create(screenW);
+  timeUI.screen = lv_obj_create(NULL);
+
+  lv_obj_t *timeBox = lv_obj_create(timeUI.screen);
+  lv_obj_set_flex_flow(timeBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_obj_size(timeBox, HRESOLUTION, lv_pct(70));
+
+  timeUI.time = lv_label_create(timeBox);
   lv_label_set_text_static(timeUI.time, "00:00");
   lv_obj_set_style_text_font(timeUI.time, &LoraBold, LV_PART_MAIN);
   lv_obj_set_style_text_align(timeUI.time, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_update_layout(timeUI.time);
+  lv_obj_set_align(timeUI.time, LV_ALIGN_TOP_MID);
 
-  int w = lv_obj_get_width(timeUI.time);
-  int h = lv_obj_get_height(timeUI.time);
+  timeUI.seconds = lv_label_create(timeBox);
+  lv_label_set_text_static(timeUI.seconds, "00");
+  lv_style_set_text_font(timeUI.seconds, LV_STATE_DEFAULT, &lv_font_montserrat_28);
+  lv_obj_set_style_text_align(timeUI.seconds, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+
+  int w = lv_obj_get_width(timeBox);
+  int h = lv_obj_get_height(timeBox);
   lv_obj_set_pos(timeUI.time, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
 
-  timeUI.seconds = lv_label_create(screenW);
-  lv_label_set_text_static(timeUI.seconds, "00");
-  //  lv_obj_set_style_text_font(timeUI.seconds, &LoraBold, LV_PART_MAIN);
-  lv_obj_set_style_text_align(timeUI.seconds, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-  lv_obj_update_layout(timeUI.seconds);
+  timeUI.apName = lv_obj_create(timeUI.screen);
+  lv_obj_set_align(timeUI.apName, LV_ALIGN_BOTTOM_LEFT);
 
+  timeUI.ntpName = lv_obj_create(timeUI.screen);
+  lv_obj_set_align(timeUI.ntpName, LV_ALIGN_BOTTOM_RIGHT);
+
+  lv_obj_update_layout(timeUI.screen);
   lv_timer_create(secondsCB, 1000, NULL);
+}
+
+
+static void setupUI(void) {
+  setupClockUI();
+  setupStyles();
+  setupKeyboard();
+  setupStatusBar();
+  setupPasswordBox();
+  setupSettings();
 }
 
 
@@ -665,9 +726,12 @@ static void setupSNTP(void) {
 }
 
 
-static void setupTimeZone(void) {
+static void getSettings(void) {
   setenv("TZ", lv_label_get_text(settings.tzString), 1);
-  tzset();
+}
+
+
+static void enableClockUI(void) {
 }
 
 
@@ -682,16 +746,15 @@ void app_main(void) {
   setupNVS();
   setupSNTP();
 
-  setupStyles();
-  setupKeyboard();
-  setupStatusBar();
-  setupPasswordBox();
-  setupSettings();
-
-  setupTimeZone();
-
   setupNetwork();
-  setupClockUI();
+  setupUI();		 /* Setup but don't actually display UI yet */
+
+  // These two MUST be last because the LV_EVENT_VALUE_CHANGED event
+  // callbacks set everything up according to saved NVS values or UI
+  // changes and the UI needs to not be displayed until after NVS
+  // values are used to set those.
+  getSettings();
+  enableClockUI();	  /* Finally, enable clock UI to be visible */
 
   while (1) {
     // raise the task priority of LVGL and/or reduce the handler period can improve the performance

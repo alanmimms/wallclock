@@ -138,3 +138,8 @@ in the LucidChart is framed as a slide solely so I could see what the
 UI would look like in a frame. LucidChart can do way more than slide
 presentations! Note: I have no affiliation with the Lucid.app people
 other than using and liking their tools.
+
+In that drawing, the green lines show the objects I use for alignment
+and grouping. These are invisible in the UI, but they do allow groups
+to be aligned as a unit and to layout the contents of the group
+according to the Flex Flow rule provided by LVGL.

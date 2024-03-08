@@ -1,5 +1,9 @@
 key,type,encoding,value
-WiFi,namespace,,
-w000ssid,data,string,Starview
-w000pass,data,string,8784bannerridge
-w000sntp,data,string,pool.ntp.org
+nvs,namespace,,
+ssid,data,string,Starview
+pass,data,string,8784bannerridge
+24hr,data,u8,1
+ntp1,data,string,pool.ntp.org
+ntp2,data,string,
+ntp3,data,string,
+tz,data,string,PST-08
