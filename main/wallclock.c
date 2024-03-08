@@ -72,18 +72,13 @@ static int seconds = 0;
 
 // Our icons created with https://lvgl.io/tools/imageconverter
 extern const lv_img_dsc_t visible;
-extern const lv_img_dsc_t not_visible;
+extern const lv_img_dsc_t invisible;
 extern const lv_img_dsc_t cog;
-
-
-// These are initialized from NVS and copied out of textarea when
-// updated by UI.
-static char *wifiSSID;
-static char *wifiPass;
 
 
 static struct {
   lv_style_t base;
+  lv_style_t icon;
   lv_style_t popup;
   lv_style_t popupWidget;
   lv_style_t popupHeading;
@@ -114,6 +109,7 @@ static struct {
   lv_obj_t *settingsButton;
   lv_obj_t *time;
   lv_obj_t *seconds;
+  lv_obj_t *tz;
   lv_obj_t *date;
   lv_obj_t *apName;
   lv_obj_t *ntpName;
@@ -146,7 +142,7 @@ static struct {
 static struct {
   lv_obj_t *screen;
   lv_obj_t *pass;		/* textarea userdata=keyboard when focused */
-  lv_obj_t *showPassword;
+  lv_obj_t *visible;
   lv_obj_t *ok;
   lv_obj_t *cancel;
 } passwordUI;
@@ -156,30 +152,26 @@ static struct {
 // initially, are modified by the settingsUI, wifiUI, and passwordUI,
 // and are saved back to NVS when changed.
 static struct {
-  u8 twelveHr;			/* Set if 12hr is needed (24hr otherwise) */
-  u8 showSeconds;		/* Display and update seconds */
-  u8 showDayDate;		/* Display day of week and date */
-  char *tz;			/* String for TZ envar */
-  char *ntp1;			/* String for primary NTP site */
-  char *ntp2;			/* String for secondary NTP site */
-  char *ntp3;			/* String for tertiary NTP site */
-  char *ssid;			/* String for current selected WiFi SSID */
-  char *password;		/* String for current selected Wifi SSID's password */
-} settings;
-
-
-// https://serverfault.com/questions/45439/what-is-the-maximum-length-of-a-wifi-access-points-ssid
-#define SSID_LENGTH	33
-
-// https://stackoverflow.com/questions/18006390/why-is-the-wpa2-psk-key-length-limited-to-63-characters
-#define PASS_LENGTH	64
-
-
-// The NTP server list is fixed in size. Its NUL terminated string
-// values are filled in from NVS on boot and modified by copying from
-// UI. An empty element is signified by a NULL pointer.
-#define N_NTP_SERVERS	3
-static char *ntpList[N_NTP_SERVERS];
+  uint8_t twelveHr;	  /* Set if 12hr is needed (24hr otherwise) */
+  uint8_t showSeconds;	  /* Display and update seconds */
+  uint8_t showDayDate;	  /* Display day of week and date */
+  char *tz;		  /* String for TZ envar */
+  char *ntp1;		  /* String for primary NTP site */
+  char *ntp2;		  /* String for secondary NTP site */
+  char *ntp3;		  /* String for tertiary NTP site */
+  char *ssid;		  /* String for current selected WiFi SSID */
+  char *password;	  /* String for current selected Wifi SSID's password */
+} settings = {
+  .twelveHr = 0,
+  .showSeconds = 1,
+  .showDayDate = 1,
+  .tz = "PST",
+  .ntp1 = "pool.ntp.org",
+  .ntp2 = "time.google.com",
+  .ntp3 = "clock.uregina.ca",
+  .ssid = "My Sooper Seekyure WiFi",
+  .password = "s00per-skeQret",
+};
 
 
 // Use two semaphores to sync the VSYNC event and the LVGL task, to
@@ -216,6 +208,7 @@ static void secondsCB(lv_timer_t *timerP) {
     }
   }
 
+#if 0
   time_t now;
   struct tm tm;
   time(&now);
@@ -232,6 +225,7 @@ static void secondsCB(lv_timer_t *timerP) {
 
   int st = strftime(buf, sizeof(buf)-1, "%A %B %d, %Y");
   lv_label_set_text(timeUI.date, date);
+#endif
 }
 
 
@@ -266,45 +260,210 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 
 static void setupClockUI(void) {
   ESP_LOGI(TAG, "[set up clock UI]");
+
   timeUI.screen = lv_obj_create(NULL);
 
-  lv_obj_t *timeBox = lv_obj_create(timeUI.screen);
-  lv_obj_set_flex_flow(timeBox, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_obj_size(timeBox, HRESOLUTION, lv_pct(70));
+  // Set up the default style for the large-ish text. Most of the
+  // objects on this screen use this.
+  lv_obj_set_style_text_font(timeUI.screen, &lv_font_montserrat_24, LV_PART_MAIN);
 
-  timeUI.time = lv_label_create(timeBox);
-  lv_label_set_text_static(timeUI.time, "00:00");
-  lv_obj_set_style_text_font(timeUI.time, &LoraBold, LV_PART_MAIN);
-  lv_obj_set_style_text_align(timeUI.time, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_align(timeUI.time, LV_ALIGN_TOP_MID);
+  // For each block that configures an LVGL object, use this pointer
+  // to avoid copypasta errors.
+  lv_obj_t *p;
 
-  timeUI.seconds = lv_label_create(timeBox);
-  lv_label_set_text_static(timeUI.seconds, "00");
-  lv_style_set_text_font(timeUI.seconds, LV_STATE_DEFAULT, &lv_font_montserrat_28);
-  lv_obj_set_style_text_align(timeUI.seconds, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+  /* The time grid and stuff inside it */
+  {
+    lv_obj_t *timeGrid = lv_obj_create(timeUI.screen);
+    p = timeGrid;
 
-  int w = lv_obj_get_width(timeBox);
-  int h = lv_obj_get_height(timeBox);
-  lv_obj_set_pos(timeUI.time, (HRESOLUTION - w)/2, (VRESOLUTION - h)/2);
+    static const lv_coord_t timeGridCols[] = {
+      LV_GRID_CONTENT,		/* Hours/minutes */
+      LV_GRID_CONTENT,		/* Seconds */
+      LV_GRID_TEMPLATE_LAST};
 
-  timeUI.apName = lv_obj_create(timeUI.screen);
-  lv_obj_set_align(timeUI.apName, LV_ALIGN_BOTTOM_LEFT);
+    static const lv_coord_t timeGridRows[] = {
+      LV_GRID_CONTENT,		/* Hours/minutes/seconds */
+      LV_GRID_CONTENT,		/* Timezone */
+      LV_GRID_CONTENT,		/* Day/date */
+      LV_GRID_TEMPLATE_LAST};
 
-  timeUI.ntpName = lv_obj_create(timeUI.screen);
-  lv_obj_set_align(timeUI.ntpName, LV_ALIGN_BOTTOM_RIGHT);
+    lv_obj_set_layout(p, LV_LAYOUT_GRID);
+    lv_obj_set_size(p, HRESOLUTION, VRESOLUTION);
+    lv_obj_set_align(p, LV_ALIGN_CENTER);
+    lv_obj_set_grid_dsc_array(p, timeGridCols, timeGridRows);
 
-  lv_obj_update_layout(timeUI.screen);
+    // The hours:minutes
+    p = timeUI.time = lv_label_create(timeGrid);
+    lv_label_set_text_static(p, "00:00");
+    lv_obj_set_style_text_font(p, &LoraBold, LV_PART_MAIN);
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_grid_cell(p,
+			 LV_GRID_ALIGN_START, 0, 1,
+			 LV_GRID_ALIGN_CENTER, 0, 1);
+
+    // The seconds
+    p = timeUI.seconds = lv_label_create(timeGrid);
+    lv_label_set_text_static(p, "00");
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+    lv_obj_set_grid_cell(p,
+			 LV_GRID_ALIGN_END, 1, 1,
+			 LV_GRID_ALIGN_END, 0, 1);
+
+    // The timezone
+    p = timeUI.tz = lv_label_create(timeGrid);
+    lv_label_set_text_static(p, "PST");
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+    lv_obj_set_align(p, LV_ALIGN_BOTTOM_RIGHT);
+    lv_obj_set_grid_cell(p,
+			 LV_GRID_ALIGN_END, 0, 2,
+			 LV_GRID_ALIGN_CENTER, 1, 1);
+
+    // The day/date
+    p = timeUI.date = lv_label_create(timeGrid);
+    lv_label_set_text_static(p, "Blurday Franuary 33, 1999");
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+    lv_obj_set_grid_cell(p,
+			 LV_GRID_ALIGN_END, 0, 2,
+			 LV_GRID_ALIGN_CENTER, 2, 1);
+  }
+
+  // The WiFi SSID in status bar
+  p = timeUI.apName = lv_label_create(timeUI.screen);
+  lv_obj_set_align(p, LV_ALIGN_BOTTOM_LEFT);
+  lv_label_set_text_static(p, settings.ssid);
+  lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
+  lv_obj_set_width(p, LV_SIZE_CONTENT);
+
+  // The NTP source site in status bar
+  p = timeUI.ntpName = lv_label_create(timeUI.screen);
+  lv_obj_set_align(p, LV_ALIGN_BOTTOM_RIGHT);
+  lv_label_set_text_static(p, settings.ntp1);
+  lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+  lv_obj_set_width(p, LV_SIZE_CONTENT);
+
+  // The settings (cog) button
+  p = timeUI.settingsButton = lv_img_create(timeUI.screen);
+  lv_img_set_src(p, &cog);
+  lv_obj_add_style(p, &styles.icon, LV_PART_MAIN);
+  lv_obj_set_align(p, LV_ALIGN_TOP_RIGHT);
+
+  lv_scr_load(timeUI.screen);
   lv_timer_create(secondsCB, 1000, NULL);
 }
 
 
+static void setupPasswordUI(void) {
+  (void) &passwordUI;
+}
+
+
+static void setupWifiUI(void) {
+  (void) &wifiUI;
+}
+
+
+static void networkScanner(void) {
+}
+
+
+// Define each style by initializing its static variable as a new
+// style and calling each of the SETTINGS style setting functions with
+// their respective parameters.
+static void setupStyles(void) {
+  // The background color from which we derive borders and 
+  static const unsigned mainBgColor = 0x222244;
+
+#define INIT(STYLE)			lv_style_init(&styles.STYLE)
+#define SET(STYLE,ATTR,PARMS...)	lv_style_set_##ATTR(&styles.STYLE, PARMS)
+
+  INIT(base);
+  SET(base, bg_color, lv_color_hex(mainBgColor));
+  SET(base, border_color, lv_color_lighten(lv_color_hex(mainBgColor), 3));
+  SET(base, border_width, 2);
+  SET(base, radius, 10);
+  SET(base, shadow_width, 10);
+  SET(base, shadow_ofs_y, 5);
+  SET(base, shadow_opa, LV_OPA_50);
+  SET(base, text_color, lv_color_white());
+
+  INIT(icon);
+  SET(icon, pad_all, 16);
+
+#define STYLES								\
+  DO1(statusStyle,							\
+      SET1(text_font, &lv_font_montserrat_10))				\
+  DO1(buttonStyle,							\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREY)))		\
+  DO1(okButtonStyle,							\
+      SET1(border_color, lv_palette_main(LV_PALETTE_GREEN)))		\
+  DO1(cancelButtonStyle,						\
+      SET1(border_color, lv_palette_main(LV_PALETTE_ORANGE)))		\
+  DO1(popupStyle,							\
+      SET1(bg_color, lv_palette_main(LV_PALETTE_ORANGE)))
+
+// First, declare the static variables for our styles
+#define DO1(S, SETTINGS...)	static lv_style_t S;
+    STYLES
+#undef DO1
+
+
+#define SET1(F, ARGS...)	lv_style_set_ ## F(s, ARGS);
+
+#define DO1(S, SETTINGS...)			\
+  {						\
+    lv_style_t *s = &S;				\
+    lv_style_init(s);				\
+    SETTINGS					\
+  }
+
+  STYLES
+#undef SET1
+#undef DO1
+
+#undef SET
+#undef INIT
+}
+
+
+static void setupKeyboard(void) {
+  keyboard = lv_keyboard_create(lv_scr_act());
+  lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+
+static void setupSettingsUI(void) {
+#if 0
+  lv_obj_t *settings = lv_obj_create(lv_scr_act());
+  lv_obj_add_style(settings, &borderStyle, 0);
+  lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
+  lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
+
+  settingsLabel = lv_label_create(settings);
+  lv_label_set_text(settingsLabel, "Settings " LV_SYMBOL_SETTINGS);
+  lv_obj_align(settingsLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  settingsCloseBtn = lv_btn_create(settings);
+  lv_obj_set_size(settingsCloseBtn, 30, 30);
+  lv_obj_align(settingsCloseBtn, LV_ALIGN_TOP_RIGHT, 0, -10);
+  lv_obj_add_event_cb(settingsCloseBtn, buttonEventCB, LV_EVENT_ALL, NULL);
+  lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
+  lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
+  lv_obj_center(btnSymbol);
+
+  wfList = lv_list_create(settings);
+  lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
+  lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
+#endif
+}
+
+
 static void setupUI(void) {
-  setupClockUI();
   setupStyles();
+  setupClockUI();
   setupKeyboard();
-  setupStatusBar();
-  setupPasswordBox();
-  setupSettings();
+  setupPasswordUI();
+  setupWifiUI();
+  setupSettingsUI();
 }
 
 
@@ -512,66 +671,10 @@ static void setupNetwork(void) {
 }
 
 
-// Define each style by initializing its static variable as a new
-// style and calling each of the SETTINGS style setting functions with
-// their respective parameters.
-static void setupStyles(void) {
-  // The background color from which we derive borders and 
-  static const unsigned mainBgColor = 0x222244;
-
-#define INIT(STYLE)			lv_style_init(&styles.STYLE)
-#define SET(STYLE,ATTR,PARMS...)	lv_style_set_##ATTR(&styles.STYLE, PARMS)
-
-  INIT(base);
-  SET(base, bg_color, lv_color_hex(mainBgColor));
-  SET(base, border_color, lv_color_lighten(lv_color_hex(mainBgColor), 3));
-  SET(base, border_width, 2);
-  SET(base, radius, 10);
-  SET(base, shadow_width, 10);
-  SET(base, shadow_ofs_y, 5);
-  SET(base, shadow_opa, LV_OPA_50);
-  SET(base, text_color, lv_color_white());
-
-#define STYLES								\
-  DO1(statusStyle,							\
-    SET1(text_font, &lv_font_montserrat_10))				\
-  DO1(buttonStyle,							\
-      SET1(border_color, lv_palette_main(LV_PALETTE_GREY)))		\
-  DO1(okButtonStyle,							\
-      SET1(border_color, lv_palette_main(LV_PALETTE_GREEN)))		\
-  DO1(cancelButtonStyle,						\
-      SET1(border_color, lv_palette_main(LV_PALETTE_ORANGE)))		\
-  DO1(popupStyle,							\
-      SET1(bg_color, lv_palette_main(LV_PALETTE_ORANGE)))
-
-// First, declare the static variables for our styles
-#define DO1(S, SETTINGS...)	static lv_style_t S;
-    STYLES
-#undef DO1
-
-
-#define SET1(F, ARGS...)	lv_style_set_ ## F(s, ARGS);
-
-#define DO1(S, SETTINGS...)			\
-  {						\
-    lv_style_t *s = &S;				\
-    lv_style_init(s);				\
-    SETTINGS					\
-  }
-
-  STYLES
-#undef SET1
-#undef DO1
-
-#undef SET
-#undef INIT
-}
-
-
 static void settingsButtonEventCB(lv_event_t *e) {
 
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-    lv_obj_clear_flag(settings, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(settingsUI.screen, LV_OBJ_FLAG_HIDDEN);
   }
 }
 
@@ -579,7 +682,7 @@ static void settingsButtonEventCB(lv_event_t *e) {
 static void settingsCloseButtonEventCB(lv_event_t *e) {
 
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-    lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(settingsUI.screen, LV_OBJ_FLAG_HIDDEN);
   }
 }
 
@@ -624,42 +727,6 @@ static void buttonEventCB(lv_event_t *e) {
     }
   }
 #endif
-}
-
-
-static void setupKeyboard(void) {
-  keyboard = lv_keyboard_create(lv_scr_act());
-  lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-}
-
-
-static void setupSettings(void) {
-#if 0
-  lv_obj_t *settings = lv_obj_create(lv_scr_act());
-  lv_obj_add_style(settings, &borderStyle, 0);
-  lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
-  lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
-
-  settingsLabel = lv_label_create(settings);
-  lv_label_set_text(settingsLabel, "Settings " LV_SYMBOL_SETTINGS);
-  lv_obj_align(settingsLabel, LV_ALIGN_TOP_LEFT, 0, 0);
-
-  settingsCloseBtn = lv_btn_create(settings);
-  lv_obj_set_size(settingsCloseBtn, 30, 30);
-  lv_obj_align(settingsCloseBtn, LV_ALIGN_TOP_RIGHT, 0, -10);
-  lv_obj_add_event_cb(settingsCloseBtn, buttonEventCB, LV_EVENT_ALL, NULL);
-  lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
-  lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
-  lv_obj_center(btnSymbol);
-
-  wfList = lv_list_create(settings);
-  lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
-  lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
-#endif
-}
-
-
-static void destroySettings(void) {
 }
 
 
@@ -708,18 +775,6 @@ static void setupNVS(void) {
 }
 
 
-static void setupStatusBar(void) {
-}
-
-
-static void setupPasswordBox(void) {
-}
-
-
-static void networkScanner(void) {
-}
-
-
 static void setupSNTP(void) {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -727,7 +782,7 @@ static void setupSNTP(void) {
 
 
 static void getSettings(void) {
-  setenv("TZ", lv_label_get_text(settings.tzString), 1);
+  setenv("TZ", settings.tz, 1);
 }
 
 
