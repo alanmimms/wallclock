@@ -353,17 +353,19 @@ static void setupClockUI(void) {
 
 
 static void setupPasswordUI(void) {
-  (void) &passwordUI;
+  (void) &passwordUI;		/* Don't warn me */
 }
 
 
 static void setupWifiUI(void) {
-  (void) &wifiUI;
+  (void) &wifiUI;		/* Don't warn me */
 }
 
 
+#if 0
 static void networkScanner(void) {
 }
+#endif
 
 
 // Define each style by initializing its static variable as a new
@@ -432,6 +434,7 @@ static void setupKeyboard(void) {
 
 
 static void setupSettingsUI(void) {
+  (void) &settingsUI;		/* Don't warn me */
 #if 0
   lv_obj_t *settings = lv_obj_create(lv_scr_act());
   lv_obj_add_style(settings, &borderStyle, 0);
@@ -671,36 +674,40 @@ static void setupNetwork(void) {
 }
 
 
+#if 0
 static void settingsButtonEventCB(lv_event_t *e) {
 
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
     lv_obj_clear_flag(settingsUI.screen, LV_OBJ_FLAG_HIDDEN);
   }
 }
+#endif
 
 
+#if 0
 static void settingsCloseButtonEventCB(lv_event_t *e) {
 
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
     lv_obj_add_flag(settingsUI.screen, LV_OBJ_FLAG_HIDDEN);
   }
 }
+#endif
 
 
-static void mboxConnectButtonEventCB(lv_event_t *e) {
 #if 0
+static void mboxConnectButtonEventCB(lv_event_t *e) {
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
     ssidPW = String(lv_textarea_get_text(mboxPassword));
     networkConnector();
     lv_obj_move_background(mboxConnect);
     popupMsgBox("Connecting!", "Attempting to connect to the selected network.");
   }
-#endif
 }
+#endif
 
 
-static void buttonEventCB(lv_event_t *e) {
 #if 0
+static void buttonEventCB(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t *btn = lv_event_get_target(e);
 
@@ -726,8 +733,8 @@ static void buttonEventCB(lv_event_t *e) {
       lv_list_add_text(wfList, "WiFi: Looking for Networks...");
     }
   }
-#endif
 }
+#endif
 
 
 // Read our NVS variables
