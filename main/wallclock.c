@@ -258,6 +258,12 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 }
 
 
+static void cogClickedCB(lv_event_t *ev) {
+  ESP_LOGI(TAG, "Show settingsUI, event code=%d", ev->code);
+  lv_scr_load(timeUI.screen);
+}
+
+
 static void setupClockUI(void) {
   ESP_LOGI(TAG, "[set up clock UI]");
 
@@ -275,6 +281,7 @@ static void setupClockUI(void) {
   {
     lv_obj_t *timeGrid = lv_obj_create(timeUI.screen);
     p = timeGrid;
+    lv_obj_align(p, LV_ALIGN_CENTER, 0, 40);
 
     static const lv_coord_t timeGridCols[] = {
       LV_GRID_CONTENT,		/* Hours/minutes */
@@ -346,6 +353,7 @@ static void setupClockUI(void) {
   lv_img_set_src(p, &cog);
   lv_obj_add_style(p, &styles.icon, LV_PART_MAIN);
   lv_obj_set_align(p, LV_ALIGN_TOP_RIGHT);
+  lv_obj_add_event_cb(p, cogClickedCB, LV_EVENT_ALL, NULL);
 
   lv_scr_load(timeUI.screen);
   lv_timer_create(secondsCB, 1000, NULL);
@@ -434,29 +442,17 @@ static void setupKeyboard(void) {
 
 
 static void setupSettingsUI(void) {
-  (void) &settingsUI;		/* Don't warn me */
-#if 0
-  lv_obj_t *settings = lv_obj_create(lv_scr_act());
-  lv_obj_add_style(settings, &borderStyle, 0);
-  lv_obj_set_size(settings, HRESOLUTION - 100, VRESOLUTION - 40);
-  lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -20, 20);
+  lv_obj_t *p;
 
-  settingsLabel = lv_label_create(settings);
-  lv_label_set_text(settingsLabel, "Settings " LV_SYMBOL_SETTINGS);
-  lv_obj_align(settingsLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+  settingsUI.screen = lv_obj_create(NULL);
 
-  settingsCloseBtn = lv_btn_create(settings);
-  lv_obj_set_size(settingsCloseBtn, 30, 30);
-  lv_obj_align(settingsCloseBtn, LV_ALIGN_TOP_RIGHT, 0, -10);
-  lv_obj_add_event_cb(settingsCloseBtn, buttonEventCB, LV_EVENT_ALL, NULL);
-  lv_obj_t *btnSymbol = lv_label_create(settingsCloseBtn);
-  lv_label_set_text(btnSymbol, LV_SYMBOL_CLOSE);
-  lv_obj_center(btnSymbol);
+  p = lv_label_create(settingsUI.screen);
 
-  wfList = lv_list_create(settings);
-  lv_obj_set_size(wfList, HRESOLUTION - 140, 210);
-  lv_obj_align_to(wfList, settingsLabel, LV_ALIGN_TOP_LEFT, 0, 30);
-#endif
+  // XXX this should probably be a named style
+  lv_obj_set_style_text_font(p, &lv_font_montserrat_24, LV_PART_MAIN);
+
+  lv_label_set_text(p, "Settings");
+  lv_obj_align(p, LV_ALIGN_TOP_LEFT, 0, 0);
 }
 
 
