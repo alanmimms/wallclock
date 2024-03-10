@@ -55,6 +55,65 @@ static const char *TAG = "wallclock";
 // https://github.com/pjaos/mgos_esp32_littlevgl_wifi_setup/tree/master
 
 
+// XXX remove this after debugging
+static const char *evToName[] = {
+  "EVENT_ALL",
+
+  /** Input device events*/
+  "EVENT_PRESSED",
+  "EVENT_PRESSING",
+  "EVENT_PRESS_LOST",
+  "EVENT_SHORT_CLICKED",
+  "EVENT_LONG_PRESSED",
+  "EVENT_LONG_PRESSED_REPEAT",
+  "EVENT_CLICKED",
+  "EVENT_RELEASED",
+  "EVENT_SCROLL_BEGIN",
+  "EVENT_SCROLL_END",
+  "EVENT_SCROLL",
+  "EVENT_GESTURE",
+  "EVENT_KEY",
+  "EVENT_FOCUSED",
+  "EVENT_DEFOCUSED",
+  "EVENT_LEAVE",
+  "EVENT_HIT_TEST",
+
+  /** Drawing events*/
+  "EVENT_COVER_CHECK",
+  "EVENT_REFR_EXT_DRAW_SIZE",
+  "EVENT_DRAW_MAIN_BEGIN",
+  "EVENT_DRAW_MAIN",
+  "EVENT_DRAW_MAIN_END",
+  "EVENT_DRAW_POST_BEGIN",
+  "EVENT_DRAW_POST",
+  "EVENT_DRAW_POST_END",
+  "EVENT_DRAW_PART_BEGIN",
+  "EVENT_DRAW_PART_END",
+
+  /** Special events*/
+  "EVENT_VALUE_CHANGED",
+  "EVENT_INSERT",
+  "EVENT_REFRESH",
+  "EVENT_READY",
+  "EVENT_CANCEL",
+
+  /** Other events*/
+  "LV_EVENT_DELETE",
+  "EVENT_CHILD_CHANGED",
+  "EVENT_CHILD_CREATED",
+  "EVENT_CHILD_DELETED",
+  "EVENT_SCREEN_UNLOAD_START",
+  "EVENT_SCREEN_LOAD_START",
+  "EVENT_SCREEN_LOADED",
+  "EVENT_SCREEN_UNLOADED",
+  "EVENT_SIZE_CHANGED",
+  "EVENT_STYLE_CHANGED",
+  "EVENT_LAYOUT_CHANGED",
+  "EVENT_GET_SELF_SIZE",
+};
+
+
+
 #define HRESOLUTION 800
 #define VRESOLUTION 480
 
@@ -79,18 +138,17 @@ extern const lv_img_dsc_t cog;
 static struct {
   lv_style_t base;
   lv_style_t icon;
-  lv_style_t popup;
-  lv_style_t popupWidget;
-  lv_style_t popupHeading;
-  lv_style_t textArea;
+  lv_style_t widget;
   lv_style_t time;
   lv_style_t selectedItem;
+  lv_style_t pageHeader;
 } styles;
 
 
 static lv_disp_t *disp;
 static lv_obj_t *keyboard;
-extern lv_font_t LoraBold;
+extern lv_font_t LoraBold240;
+extern lv_font_t RobotoMedium40;
 
 
 // The display has one LVGL "screen" loaded at a time, and this is
@@ -109,6 +167,7 @@ static struct {
   lv_obj_t *settingsButton;
   lv_obj_t *time;
   lv_obj_t *seconds;
+  lv_obj_t *ampm;
   lv_obj_t *tz;
   lv_obj_t *date;
   lv_obj_t *apName;
@@ -120,7 +179,7 @@ static struct {
 
 static struct {
   lv_obj_t *screen;
-  lv_obj_t *timeFormat;		/* Checkbox */
+  lv_obj_t *twelveHr;		/* Checkbox */
   lv_obj_t *showSeconds;	/* Checkbox */
   lv_obj_t *showDayDate;	/* Checkbox */
   lv_obj_t *ntp[N_NTP_SERVERS];	/* Each is a textarea */
@@ -259,103 +318,96 @@ static void flushCB(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
 
 
 static void cogClickedCB(lv_event_t *ev) {
-  ESP_LOGI(TAG, "Show settingsUI, event code=%d", ev->code);
-  lv_scr_load(timeUI.screen);
+  ESP_LOGI(TAG, "cog clicked event code=%d (%s)", ev->code, evToName[ev->code]);
+  if (ev->code == LV_EVENT_CLICKED) lv_scr_load(settingsUI.screen);
 }
 
 
 static void setupClockUI(void) {
-  ESP_LOGI(TAG, "[set up clock UI]");
-
-  timeUI.screen = lv_obj_create(NULL);
-
-  // Set up the default style for the large-ish text. Most of the
-  // objects on this screen use this.
-  lv_obj_set_style_text_font(timeUI.screen, &lv_font_montserrat_24, LV_PART_MAIN);
-
   // For each block that configures an LVGL object, use this pointer
   // to avoid copypasta errors.
   lv_obj_t *p;
 
-  /* The time grid and stuff inside it */
-  {
-    lv_obj_t *timeGrid = lv_obj_create(timeUI.screen);
-    p = timeGrid;
-    lv_obj_align(p, LV_ALIGN_CENTER, 0, 40);
+  ESP_LOGI(TAG, "[set up clock UI]");
 
-    static const lv_coord_t timeGridCols[] = {
-      LV_GRID_CONTENT,		/* Hours/minutes */
-      LV_GRID_CONTENT,		/* Seconds */
-      LV_GRID_TEMPLATE_LAST};
+  p = timeUI.screen = lv_obj_create(NULL);
+  lv_obj_add_style(p, &styles.base, LV_PART_MAIN);
 
-    static const lv_coord_t timeGridRows[] = {
-      LV_GRID_CONTENT,		/* Hours/minutes/seconds */
-      LV_GRID_CONTENT,		/* Timezone */
-      LV_GRID_CONTENT,		/* Day/date */
-      LV_GRID_TEMPLATE_LAST};
+  // Set up the default style for the large-ish text. Most of the
+  // objects on this screen use this.
+  lv_obj_set_style_text_font(p, &RobotoMedium40, LV_PART_MAIN);
 
-    lv_obj_set_layout(p, LV_LAYOUT_GRID);
-    lv_obj_set_size(p, HRESOLUTION, VRESOLUTION);
-    lv_obj_set_align(p, LV_ALIGN_CENTER);
-    lv_obj_set_grid_dsc_array(p, timeGridCols, timeGridRows);
+  // Left edge of hh:mm
+  static const int timeL = 32;
+  // Top edge of hh:mm
+  static const int timeT = 32;
 
-    // The hours:minutes
-    p = timeUI.time = lv_label_create(timeGrid);
-    lv_label_set_text_static(p, "00:00");
-    lv_obj_set_style_text_font(p, &LoraBold, LV_PART_MAIN);
-    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_set_grid_cell(p,
-			 LV_GRID_ALIGN_START, 0, 1,
-			 LV_GRID_ALIGN_CENTER, 0, 1);
+  // Padding below hh:mm:ss before top fo timezone
+  static const int timeBottomPad = 10;
 
-    // The seconds
-    p = timeUI.seconds = lv_label_create(timeGrid);
-    lv_label_set_text_static(p, "00");
-    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_set_grid_cell(p,
-			 LV_GRID_ALIGN_END, 1, 1,
-			 LV_GRID_ALIGN_END, 0, 1);
+  // The hours:minutes
+  p = timeUI.time = lv_label_create(timeUI.screen);
+  lv_label_set_text_static(p, "00:00");
+  lv_obj_set_style_text_font(p, &LoraBold240, LV_PART_MAIN);
+  lv_obj_set_pos(p, timeL, timeT);
 
-    // The timezone
-    p = timeUI.tz = lv_label_create(timeGrid);
-    lv_label_set_text_static(p, "PST");
-    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_set_align(p, LV_ALIGN_BOTTOM_RIGHT);
-    lv_obj_set_grid_cell(p,
-			 LV_GRID_ALIGN_END, 0, 2,
-			 LV_GRID_ALIGN_CENTER, 1, 1);
-
-    // The day/date
-    p = timeUI.date = lv_label_create(timeGrid);
-    lv_label_set_text_static(p, "Blurday Franuary 33, 1999");
-    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_set_grid_cell(p,
-			 LV_GRID_ALIGN_END, 0, 2,
-			 LV_GRID_ALIGN_CENTER, 2, 1);
+  // The AM/PM indicator
+  if (settings.twelveHr || 1) {
+    p = timeUI.ampm = lv_label_create(timeUI.screen);
+    lv_label_set_text_static(p, "AM");
+    lv_obj_set_align(p, LV_ALIGN_TOP_LEFT);
+    lv_obj_align_to(p, timeUI.time, LV_ALIGN_TOP_RIGHT, 48, 36);
   }
+
+  // The seconds
+  p = timeUI.seconds = lv_label_create(timeUI.screen);
+  lv_label_set_text_static(p, "00");
+  lv_obj_set_align(p, LV_ALIGN_BOTTOM_LEFT);
+  lv_obj_align_to(p, timeUI.time, LV_ALIGN_BOTTOM_RIGHT, 48, -50);
+
+  // The timezone
+  p = timeUI.tz = lv_label_create(timeUI.screen);
+  lv_label_set_text_static(p, "PST");
+  lv_obj_set_align(p, LV_ALIGN_TOP_RIGHT);
+  lv_obj_align_to(p, timeUI.seconds, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, timeBottomPad);
+
+  // The day/date
+  p = timeUI.date = lv_label_create(timeUI.screen);
+  lv_label_set_text_static(p, "Blurday Franuary 33, 1999");
+  lv_obj_set_align(p, LV_ALIGN_TOP_RIGHT);
+  lv_obj_align_to(p, timeUI.tz, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 0);
 
   // The WiFi SSID in status bar
   p = timeUI.apName = lv_label_create(timeUI.screen);
   lv_obj_set_align(p, LV_ALIGN_BOTTOM_LEFT);
   lv_label_set_text_static(p, settings.ssid);
-  lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
   lv_obj_set_width(p, LV_SIZE_CONTENT);
 
   // The NTP source site in status bar
   p = timeUI.ntpName = lv_label_create(timeUI.screen);
   lv_obj_set_align(p, LV_ALIGN_BOTTOM_RIGHT);
   lv_label_set_text_static(p, settings.ntp1);
-  lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
   lv_obj_set_width(p, LV_SIZE_CONTENT);
 
   // The settings (cog) button
-  p = timeUI.settingsButton = lv_img_create(timeUI.screen);
-  lv_img_set_src(p, &cog);
-  lv_obj_add_style(p, &styles.icon, LV_PART_MAIN);
-  lv_obj_set_align(p, LV_ALIGN_TOP_RIGHT);
-  lv_obj_add_event_cb(p, cogClickedCB, LV_EVENT_ALL, NULL);
+  p = timeUI.settingsButton = lv_btn_create(timeUI.screen);
+  lv_obj_align_to(p, timeUI.screen, LV_ALIGN_TOP_RIGHT, 0, 0);
+  lv_obj_set_size(p, 32, 32);
+  lv_obj_add_event_cb(p, cogClickedCB, LV_EVENT_CLICKED, NULL);
+
+  // The settings (cog) button's image
+  lv_obj_t *cogImg = lv_img_create(p);
+  lv_img_set_src(cogImg, &cog);
+  lv_obj_add_style(cogImg, &styles.icon, LV_PART_MAIN);
+  lv_obj_center(cogImg);
+
+  lv_obj_update_layout(timeUI.screen);
 
   lv_scr_load(timeUI.screen);
+  ESP_LOGI(TAG, "after update layout/scr load cog pos=(%d %d)  size=(%d %d)",
+	   (int) lv_obj_get_x(p), (int) lv_obj_get_y(p),
+	   (int) lv_obj_get_width(p), (int) lv_obj_get_height(p));
+
   lv_timer_create(secondsCB, 1000, NULL);
 }
 
@@ -380,24 +432,27 @@ static void networkScanner(void) {
 // style and calling each of the SETTINGS style setting functions with
 // their respective parameters.
 static void setupStyles(void) {
-  // The background color from which we derive borders and 
-  static const unsigned mainBgColor = 0x222244;
 
 #define INIT(STYLE)			lv_style_init(&styles.STYLE)
 #define SET(STYLE,ATTR,PARMS...)	lv_style_set_##ATTR(&styles.STYLE, PARMS)
 
   INIT(base);
-  SET(base, bg_color, lv_color_hex(mainBgColor));
-  SET(base, border_color, lv_color_lighten(lv_color_hex(mainBgColor), 3));
-  SET(base, border_width, 2);
-  SET(base, radius, 10);
-  SET(base, shadow_width, 10);
-  SET(base, shadow_ofs_y, 5);
-  SET(base, shadow_opa, LV_OPA_50);
-  SET(base, text_color, lv_color_white());
+  SET(base, bg_color, lv_color_hex(0x222244));
+  SET(base, text_color, lv_color_hex(0xAAAAAA));
 
   INIT(icon);
+  SET(icon, border_color, lv_color_hex(0x5555AA));
+  SET(icon, border_width, 2);
   SET(icon, pad_all, 16);
+
+  INIT(widget);
+  SET(widget, text_font, &lv_font_montserrat_24);
+
+  INIT(pageHeader);
+  SET(pageHeader, bg_color, lv_color_hex(0xFCFCAA));
+  SET(pageHeader, bg_opa, LV_OPA_COVER);
+  SET(pageHeader, text_color, lv_color_black());
+  SET(pageHeader, text_font, &RobotoMedium40);
 
 #define STYLES								\
   DO1(statusStyle,							\
@@ -441,18 +496,73 @@ static void setupKeyboard(void) {
 }
 
 
+static lv_obj_t *makeTextBox(lv_obj_t *parent, const char *prompt, int boxWidth) {
+  lv_obj_t *group = lv_obj_create(parent);
+  lv_obj_t *p = lv_label_create(group);
+  lv_label_set_text(p, prompt);
+  lv_obj_t *box = lv_textarea_create(group);
+  lv_textarea_set_text(box, "");
+  lv_textarea_set_one_line(box, true);
+  lv_obj_set_width(box, boxWidth);
+  return group;
+}
+
+
 static void setupSettingsUI(void) {
   lv_obj_t *p;
 
   settingsUI.screen = lv_obj_create(NULL);
+  lv_obj_add_style(settingsUI.screen, &styles.base, LV_PART_MAIN);
 
   p = lv_label_create(settingsUI.screen);
-
-  // XXX this should probably be a named style
-  lv_obj_set_style_text_font(p, &lv_font_montserrat_24, LV_PART_MAIN);
-
   lv_label_set_text(p, "Settings");
-  lv_obj_align(p, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_add_style(p, &styles.pageHeader, LV_PART_MAIN);
+  lv_obj_align(p, LV_ALIGN_TOP_MID, 0, 25);
+  lv_obj_set_width(p, lv_pct(80));
+
+  p = settingsUI.twelveHr = lv_checkbox_create(settingsUI.screen);
+  lv_checkbox_set_text(p, "12-hour time format");
+  lv_obj_align(p, LV_ALIGN_TOP_LEFT, 20, 175);
+
+  p = settingsUI.showSeconds = lv_checkbox_create(settingsUI.screen);
+  lv_checkbox_set_text(p, "Show seconds");
+  lv_obj_align(p, LV_ALIGN_BOTTOM_LEFT, 0, 10);
+  lv_obj_align_to(p, settingsUI.twelveHr, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+  p = settingsUI.showDayDate = lv_checkbox_create(settingsUI.screen);
+  lv_checkbox_set_text(p, "Show day/date");
+  lv_obj_align(p, LV_ALIGN_BOTTOM_LEFT, 0, 10);
+  lv_obj_align_to(p, settingsUI.showDayDate, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+  p = settingsUI.ntp[0] = makeTextBox(settingsUI.screen, "NTP #1:", 220);
+  lv_obj_align(p, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_align_to(p, settingsUI.twelveHr, LV_ALIGN_BOTTOM_LEFT, 400, 0);
+
+  p = settingsUI.ntp[1] = makeTextBox(settingsUI.screen, "NTP #2:", 220);
+  lv_obj_align(p, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_align_to(p, settingsUI.ntp[0], LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+  p = settingsUI.ntp[2] = makeTextBox(settingsUI.screen, "NTP #3:", 220);
+  lv_obj_align(p, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_align_to(p, settingsUI.ntp[1], LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+  // Buttons are in a horizontal row aligned a little above the bottom
+  // of the screen with their edges (left for OK, right for Cancel)
+  // the same distance from the center of the screen in opposite
+  // directions.
+  p = settingsUI.ok = lv_btn_create(settingsUI.screen);
+  lv_label_set_text(p, "OK");
+  lv_obj_set_width(p, 150);
+  lv_obj_set_align(p, LV_ALIGN_BOTTOM_LEFT);
+  lv_obj_align_to(p, settingsUI.screen, LV_ALIGN_OUT_BOTTOM_MID, -250, -25);
+
+  p = settingsUI.cancel = lv_btn_create(settingsUI.screen);
+  lv_label_set_text(p, "Cancel");
+  lv_obj_set_width(p, 150);
+  lv_obj_set_align(p, LV_ALIGN_BOTTOM_RIGHT);
+  lv_obj_align_to(p, settingsUI.screen, LV_ALIGN_OUT_BOTTOM_MID, 250, -25);
+
+  lv_obj_update_layout(settingsUI.screen);
 }
 
 
